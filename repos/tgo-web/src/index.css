@@ -1,0 +1,252 @@
+@import "tailwindcss";
+@import "./styles/markdown.css";
+/* 本地化 Inter 字体（替代 Google Fonts） */
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/500.css";
+@import "@fontsource/inter/600.css";
+@import "@fontsource/inter/700.css";
+/* 本地化 highlight.js 样式（替代 cdnjs） */
+@import "highlight.js/styles/github.css";
+
+@config "../tailwind.config.js";
+
+/* Tailwind CSS v4 Theme Configuration */
+@theme {
+  --font-family-sans: "Inter", system-ui, sans-serif;
+
+  /* Custom backdrop blur values */
+  --backdrop-blur-xs: 2px;
+}
+
+/* Dark mode color scheme */
+@media (prefers-color-scheme: dark) {
+  :root:not(.dark) {
+    color-scheme: light;
+  }
+}
+
+:root.dark {
+  color-scheme: dark;
+}
+
+/* Line clamp utilities */
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+
+/* Custom scrollbar for WebKit browsers - Auto-hide when not scrolling */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(156, 163, 175, 0); /* Start transparent */
+  border-radius: 2px;
+  transition: background 0.3s ease;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(107, 114, 128, 0); /* Start transparent in dark mode */
+}
+
+/* Show scrollbar on hover of scrollable container */
+*:hover::-webkit-scrollbar-thumb {
+  background: rgba(156, 163, 175, 0.5); /* gray-400 with 50% opacity */
+}
+
+.dark *:hover::-webkit-scrollbar-thumb {
+  background: rgba(107, 114, 128, 0.6); /* darker gray in dark mode */
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(107, 114, 128, 0.7) !important; /* gray-500 with 70% opacity */
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(156, 163, 175, 0.8) !important; /* lighter gray on hover in dark mode */
+}
+
+/* Firefox scrollbar - overlay mode for auto-hide behavior */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+*:hover {
+  scrollbar-color: rgba(156, 163, 175, 0.5) transparent;
+}
+
+.dark *:hover {
+  scrollbar-color: rgba(107, 114, 128, 0.6) transparent;
+}
+
+/* Base styles */
+body {
+  margin: 0;
+  font-family: var(--font-family-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  @apply bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* Root element dark mode support */
+#root {
+  @apply bg-white dark:bg-gray-900;
+  min-height: 100vh;
+}
+
+/* Modal and dialog fixes - Updated for portal rendering */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background-color: rgba(0, 0, 0, 0.4);
+  /* Ensure modal covers entire viewport */
+  width: 100vw;
+  height: 100vh;
+  top: 0;
+  left: 0;
+}
+
+.dark .modal-overlay {
+  background-color: rgba(0, 0, 0, 0.6);
+}
+
+.modal-content {
+  background-color: white;
+  border-radius: 0.5rem;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  overflow: hidden;
+  width: 100%;
+  max-width: 28rem;
+  min-width: 320px;
+  /* 确保文字正常显示 */
+  writing-mode: horizontal-tb;
+  direction: ltr;
+  text-orientation: mixed;
+  /* Ensure modal is properly positioned */
+  position: relative;
+  z-index: 10000;
+}
+
+.dark .modal-content {
+  background-color: rgb(31, 41, 55); /* gray-800 */
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.3), 0 10px 10px -5px rgba(0, 0, 0, 0.2);
+}
+
+/* 防止文字垂直显示的修复 */
+.modal-content * {
+  writing-mode: horizontal-tb !important;
+  text-orientation: mixed !important;
+  direction: ltr !important;
+}
+
+/* 额外的文字显示修复 */
+.about-modal-fix {
+  /* 强制水平文字方向 */
+  writing-mode: horizontal-tb !important;
+  text-orientation: mixed !important;
+  direction: ltr !important;
+
+  /* 确保正常的文字流 */
+  unicode-bidi: normal !important;
+  text-align: start;
+
+  /* 防止任何可能的变换 */
+  transform: none !important;
+
+  /* 确保正常的字体渲染 */
+  font-feature-settings: normal;
+  font-variant: normal;
+
+  /* 确保正常的行高和间距 */
+  line-height: 1.5;
+  letter-spacing: normal;
+  word-spacing: normal;
+}
+
+/* 针对中文字符的特殊处理 */
+.about-modal-fix .chinese-text {
+  font-family: "Inter", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "微软雅黑", sans-serif;
+  text-rendering: optimizeLegibility;
+}
+
+/* Custom utility for flex-grow with overflow */
+@utility flex-grow-overflow {
+  flex-grow: 1;
+  height: 0;
+  overflow-y: auto;
+}
+
+/* Line clamp utility for text truncation */
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-all;
+}
+
+/* Right-aligned line clamp for text truncation */
+.line-clamp-2.text-right {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-all;
+  text-align: right;
+}
+
+/* Fallback for browsers that don't support -webkit-line-clamp */
+@supports not (-webkit-line-clamp: 2) {
+  .line-clamp-2 {
+    display: block;
+    max-height: calc(1.25rem * 2 * 1.2); /* line-height * lines * adjustment */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .line-clamp-2.text-right {
+    text-align: right;
+  }
+}
+
+/* React Flow Node Reset - Remove default styling from custom nodes */
+.react-flow__node {
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+  width: auto !important;
+  height: auto !important;
+  position: relative;
+}
+
+/* Custom Animations */
+@keyframes bounce-subtle {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+.animate-bounce-subtle {
+  animation: bounce-subtle 2s infinite ease-in-out;
+}
+
+.react-flow__node.selected {
+  box-shadow: none !important;
+}

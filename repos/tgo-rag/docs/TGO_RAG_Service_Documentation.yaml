@@ -1,0 +1,1289 @@
+openapi: 3.0.3
+info:
+  title: TGO-Tech RAG Service
+  description: |
+    **TGO-Tech RAG Service** - Retrieval-Augmented Generation Document & File Management Microservice
+    
+    This service handles file upload, document processing, content management, and vector storage specifically for RAG (Retrieval-Augmented Generation) operations in the TGO-Tech customer service platform.
+    
+    **Service Responsibilities:**
+    - File upload and storage management for RAG operations
+    - Document processing and content extraction for knowledge retrieval
+    - Vector embedding generation and storage for semantic search
+    - Content indexing and search capabilities for AI agents
+    - Document chunk management for context retrieval
+    
+    **Architecture:**
+    - Microservice architecture focused on RAG document and file operations
+    - Multi-tenant isolation using synchronized project references
+    - Event-driven communication with API and AI Services
+    - Scalable document processing pipeline for knowledge retrieval
+    
+    **Authentication:**
+    - Dual authentication support: JWT tokens and API keys
+    - JWT Authentication: Contains authorization info, skips project validation
+    - API Key Authentication: Validates against project table for access control
+    - All endpoints support both authentication methods
+
+    **Authentication Examples:**
+    ```
+    # JWT Authentication (service-to-service or user session)
+    Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+
+    # API Key Authentication (project-scoped access)
+    X-API-Key: ak_live_1234567890abcdef
+    ```
+    
+    **Inter-Service Communication:**
+    - Subscribes to project events from API Service
+    - Provides file and document endpoints for AI Service RAG operations
+    - Handles document processing workflows for knowledge base creation
+    - Supports semantic search and context retrieval for AI agents
+  version: 1.0.0
+  contact:
+    name: TGO-Tech RAG Support
+    email: rag-support@tgo-tech.com
+  license:
+    name: Proprietary
+    url: https://tgo-tech.com/license
+
+servers:
+  - url: https://rag.tgo-tech.com/v1
+    description: Production RAG Service
+  - url: https://staging-rag.tgo-tech.com/v1
+    description: Staging RAG Service
+  - url: http://localhost:8082/v1
+    description: Local Development RAG Service
+
+security:
+  - ApiKeyAuth: []
+  - JwtAuth: []
+
+tags:
+  - name: Collections
+    description: Collection management for organizing documents
+  - name: Files
+    description: File upload, storage, and management
+  - name: Documents
+    description: Document processing and content extraction
+  - name: Search
+    description: Document search and retrieval
+
+paths:
+  # =====================================================
+  # COLLECTION MANAGEMENT
+  # =====================================================
+  /collections:
+    get:
+      summary: List collections
+      description: |
+        Retrieve all collections for the authenticated project with filtering and pagination.
+        Collections are used to organize documents and files for RAG operations.
+
+        **Authentication:**
+        - JWT Authentication: Project access determined from token claims
+        - API Key Authentication: Project validated against project table
+        - Only collections belonging to the authenticated project are returned
+      tags: [Collections]
+      parameters:
+        - name: display_name
+          in: query
+          schema:
+            type: string
+          description: Filter by collection display name (partial match)
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          description: Number of collections to return
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          description: Number of collections to skip
+      responses:
+        '200':
+          description: List of collections with pagination metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CollectionResponse'
+                  pagination:
+                    $ref: '#/components/schemas/PaginationMetadata'
+        '400':
+          description: Invalid query parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Access denied to project resources
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      summary: Create a new collection
+      description: |
+        Create a new collection within the authenticated project for organizing documents and files.
+        Collections help organize RAG content and can contain metadata about embedding models,
+        chunk sizes, and other processing parameters.
+      tags: [Collections]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CollectionCreateRequest'
+            examples:
+              basic_collection:
+                summary: Basic collection creation
+                value:
+                  display_name: "Product Documentation v2.1"
+                  description: "Updated product documentation for RAG knowledge base"
+              advanced_collection:
+                summary: Collection with metadata
+                value:
+                  display_name: "Technical Manuals"
+                  description: "Technical documentation and user manuals"
+                  metadata:
+                    embedding_model: "text-embedding-ada-002"
+                    chunk_size: 1000
+                    chunk_overlap: 200
+                    language: "en"
+      responses:
+        '201':
+          description: Collection created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CollectionResponse'
+        '400':
+          description: Invalid request data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Access denied to project resources
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /collections/{collection_id}:
+    get:
+      summary: Get collection details
+      description: |
+        Retrieve detailed information about a specific collection including metadata
+        and optional statistics about contained documents and files.
+      tags: [Collections]
+      parameters:
+        - $ref: '#/components/parameters/CollectionId'
+        - name: include_stats
+          in: query
+          schema:
+            type: boolean
+            default: false
+          description: Include document and file count statistics
+      responses:
+        '200':
+          description: Collection details with optional statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CollectionDetailResponse'
+        '404':
+          description: Collection not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Access denied to project resources
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      summary: Delete collection
+      description: |
+        Delete a specific collection by its UUID. This will set collection_id to NULL
+        for associated files and documents but will not delete them.
+      tags: [Collections]
+      parameters:
+        - $ref: '#/components/parameters/CollectionId'
+      responses:
+        '204':
+          description: Collection deleted successfully
+        '404':
+          description: Collection not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Access denied to project resources
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # =====================================================
+  # FILE MANAGEMENT
+  # =====================================================
+  /files:
+    get:
+      summary: List files
+      description: Retrieve all files for the authenticated project with filtering and pagination
+      tags: [Files]
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, processing, completed, failed, archived]
+          description: Filter by processing status
+        - name: content_type
+          in: query
+          schema:
+            type: string
+          description: Filter by MIME content type
+        - name: uploaded_by
+          in: query
+          schema:
+            type: string
+          description: Filter by uploader
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          description: Number of files to return
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          description: Number of files to skip
+      responses:
+        '200':
+          description: List of files with pagination metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FileResponse'
+                  pagination:
+                    $ref: '#/components/schemas/PaginationMetadata'
+
+    post:
+      summary: Upload file for RAG processing
+      description: |
+        Upload a file for RAG processing and content extraction. The file will be stored
+        and processed for document chunking and vector embedding generation.
+        
+        **Supported File Types:**
+        - Documents: PDF, DOC, DOCX, TXT, MD, RTF
+        - Images: PNG, JPG, JPEG, GIF, TIFF (for OCR)
+        - Audio: MP3, WAV, M4A (for transcription)
+        - Archives: ZIP (for batch processing)
+        
+        **RAG Processing:**
+        Files are automatically processed for RAG operations including text extraction, chunking, and vector embedding generation for semantic search.
+      tags: [Files]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: "File to upload for RAG processing"
+                description:
+                  type: string
+                  maxLength: 1000
+                  description: "Optional description of the file"
+                tags:
+                  type: string
+                  description: "JSON string of tags and metadata"
+                  example: '{"category": "manual", "department": "support"}'
+                storage_provider:
+                  type: string
+                  enum: [local, s3, gcs, azure]
+                  default: local
+                  description: "Storage provider to use"
+      responses:
+        '201':
+          description: File uploaded successfully and queued for RAG processing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileResponse'
+
+  /files/{file_id}:
+    get:
+      summary: Get file details with RAG processing status
+      description: |
+        Retrieve detailed information about a specific file including RAG processing status,
+        document count, and metadata. This endpoint provides comprehensive file information
+        for monitoring RAG operations.
+      tags: [Files]
+      parameters:
+        - $ref: '#/components/parameters/FileId'
+        - name: include_documents
+          in: query
+          schema:
+            type: boolean
+            default: false
+          description: Include document chunks in the response
+      responses:
+        '200':
+          description: File details with optional document chunks
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileWithDocuments'
+
+    patch:
+      summary: Update file metadata
+      description: Update file description, tags, and other metadata
+      tags: [Files]
+      parameters:
+        - $ref: '#/components/parameters/FileId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                description:
+                  type: string
+                  maxLength: 1000
+                  description: "Updated file description"
+                tags:
+                  type: object
+                  description: "Updated tags and metadata"
+                status:
+                  type: string
+                  enum: [pending, processing, completed, failed, archived]
+                  description: "Updated processing status (admin only)"
+      responses:
+        '200':
+          description: File updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileResponse'
+
+    delete:
+      summary: Delete file and associated documents
+      description: |
+        Soft delete a file and all associated document chunks. This will also
+        remove the file from vector storage for RAG operations.
+      tags: [Files]
+      parameters:
+        - $ref: '#/components/parameters/FileId'
+      responses:
+        '204':
+          description: File deleted successfully
+
+  /files/{file_id}/download:
+    get:
+      summary: Download original file
+      description: |
+        Download the original uploaded file. This endpoint supports 
+        range requests for large files.
+      tags: [Files]
+      parameters:
+        - $ref: '#/components/parameters/FileId'
+      responses:
+        '200':
+          description: File content
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '206':
+          description: Partial content (range request)
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+
+  # =====================================================
+  # COLLECTION DOCUMENT MANAGEMENT
+  # =====================================================
+  /collections/{collection_id}/documents:
+    get:
+      summary: List documents in collection
+      description: |
+        Retrieve all documents within a specific collection with filtering and pagination.
+        This endpoint provides collection-scoped document access for RAG operations.
+
+        **Authentication:**
+        - JWT Authentication: Project access determined from token claims
+        - API Key Authentication: Project validated against project table
+        - Only documents from collections belonging to the authenticated project are returned
+      tags: [Documents]
+      parameters:
+        - $ref: '#/components/parameters/CollectionId'
+        - name: content_type
+          in: query
+          schema:
+            type: string
+            enum: [paragraph, heading, table, list, code, image, metadata]
+          description: Filter by content type
+        - name: language
+          in: query
+          schema:
+            type: string
+          description: Filter by language code (e.g., 'en', 'es')
+        - name: min_confidence
+          in: query
+          schema:
+            type: number
+            format: float
+            minimum: 0
+            maximum: 1
+          description: Minimum confidence score threshold
+        - name: sort_by
+          in: query
+          schema:
+            type: string
+            enum: [created_at, updated_at, confidence_score, token_count, chunk_index]
+            default: created_at
+          description: Sort field
+        - name: sort_order
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+          description: Sort order
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          description: Number of documents to return
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          description: Number of documents to skip
+      responses:
+        '200':
+          description: List of documents in collection with pagination metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DocumentResponse'
+                  pagination:
+                    $ref: '#/components/schemas/PaginationMetadata'
+        '404':
+          description: Collection not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '400':
+          description: Invalid query parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Access denied to project resources
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      summary: Create/upload document to collection
+      description: |
+        Create or upload a new document directly to a specific collection.
+        This endpoint allows direct document creation within a collection for RAG operations.
+      tags: [Documents]
+      parameters:
+        - $ref: '#/components/parameters/CollectionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DocumentCreateRequest'
+            examples:
+              text_document:
+                summary: Create text document
+                value:
+                  document_id: "manual_section_001"
+                  document_title: "Installation Overview"
+                  content: "This section provides an overview of the installation process for the software..."
+                  content_type: "paragraph"
+                  section_title: "Installation Guide"
+                  page_number: 1
+                  language: "en"
+                  tags:
+                    section: "installation"
+                    difficulty: "beginner"
+      responses:
+        '201':
+          description: Document created successfully in collection
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentResponse'
+        '404':
+          description: Collection not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '400':
+          description: Invalid document data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Access denied to project resources
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /collections/{collection_id}/documents/{document_id}:
+    delete:
+      summary: Delete document from collection
+      description: |
+        Delete a specific document by its UUID from a collection.
+        This will permanently remove the document and its vector embeddings.
+      tags: [Documents]
+      parameters:
+        - $ref: '#/components/parameters/CollectionId'
+        - $ref: '#/components/parameters/DocumentId'
+      responses:
+        '204':
+          description: Document deleted successfully
+        '404':
+          description: Collection or document not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Access denied to project resources
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /collections/{collection_id}/documents/search:
+    post:
+      summary: Search documents within collection
+      description: |
+        Perform semantic search for documents within a specific collection.
+        This endpoint provides collection-scoped search capabilities for RAG operations.
+
+        **Search Features:**
+        - Semantic similarity search using vector embeddings
+        - Collection-scoped results only
+        - Advanced filtering and ranking options
+
+        **Performance:**
+        - Response time: < 150ms for most queries
+        - Rate limit: 100 requests per minute per project
+      tags: [Search]
+      parameters:
+        - $ref: '#/components/parameters/CollectionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CollectionSearchRequest'
+            examples:
+              semantic_search:
+                summary: Semantic search in collection
+                value:
+                  query: "How to configure database settings"
+                  limit: 10
+                  min_score: 0.7
+                  filters:
+                    content_type: ["paragraph", "heading"]
+                    language: "en"
+      responses:
+        '200':
+          description: Search results within collection
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '404':
+          description: Collection not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '400':
+          description: Invalid search request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Access denied to project resources
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: |
+        Project API key for tenant isolation. When using API key authentication,
+        the service validates project access to ensure the key has permission to
+        access the requested resources.
+    JwtAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT Bearer token containing authorization information. When using JWT
+        authentication, project validation is skipped as the token contains
+        sufficient authorization data. Supports both user sessions and service-to-service
+        communication.
+
+  parameters:
+    CollectionId:
+      name: collection_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Collection UUID
+
+    FileId:
+      name: file_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: File UUID
+
+    DocumentId:
+      name: document_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Document UUID
+
+  schemas:
+    # =====================================================
+    # COLLECTION SCHEMAS
+    # =====================================================
+    CollectionResponse:
+      type: object
+      description: "Collection for API responses"
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "coll_123e4567-e89b-12d3-a456-426614174000"
+        display_name:
+          type: string
+          maxLength: 255
+          example: "Product Documentation v2.1"
+        description:
+          type: string
+          nullable: true
+          example: "Updated product documentation for RAG knowledge base"
+        metadata:
+          type: object
+          nullable: true
+          example:
+            embedding_model: "text-embedding-ada-002"
+            chunk_size: 1000
+            chunk_overlap: 200
+            language: "en"
+        created_at:
+          type: string
+          format: date-time
+          example: "2024-01-15T10:30:00Z"
+        updated_at:
+          type: string
+          format: date-time
+          example: "2024-01-15T10:30:00Z"
+        deleted_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    CollectionDetailResponse:
+      allOf:
+        - $ref: '#/components/schemas/CollectionResponse'
+        - type: object
+          properties:
+            stats:
+              type: object
+              description: "Collection statistics (when include_stats=true)"
+              properties:
+                document_count:
+                  type: integer
+                  example: 150
+                  description: "Total number of documents in collection"
+                file_count:
+                  type: integer
+                  example: 25
+                  description: "Total number of files in collection"
+                total_tokens:
+                  type: integer
+                  example: 45000
+                  description: "Total tokens across all documents"
+                last_updated:
+                  type: string
+                  format: date-time
+                  example: "2024-01-15T14:30:00Z"
+                  description: "Last time a document was added/updated"
+              nullable: true
+
+    CollectionCreateRequest:
+      type: object
+      required: [display_name]
+      properties:
+        display_name:
+          type: string
+          maxLength: 255
+          minLength: 1
+          example: "Product Documentation v2.1"
+          description: "Human-readable collection name"
+        description:
+          type: string
+          nullable: true
+          example: "Updated product documentation for RAG knowledge base"
+          description: "Optional collection description"
+        metadata:
+          type: object
+          nullable: true
+          example:
+            embedding_model: "text-embedding-ada-002"
+            chunk_size: 1000
+            chunk_overlap: 200
+            language: "en"
+          description: "Collection metadata (embedding model, chunk size, etc.)"
+
+    DocumentCreateRequest:
+      type: object
+      required: [document_id, content]
+      properties:
+        document_id:
+          type: string
+          maxLength: 100
+          example: "manual_section_001"
+          description: "Unique document identifier within the collection"
+        document_title:
+          type: string
+          maxLength: 500
+          nullable: true
+          example: "Installation Overview"
+          description: "Document title or heading"
+        content:
+          type: string
+          minLength: 1
+          example: "This section provides an overview of the installation process for the software..."
+          description: "Document content text for RAG processing"
+        content_type:
+          type: string
+          enum: [paragraph, heading, table, list, code, image, metadata]
+          default: paragraph
+          example: "paragraph"
+          description: "Type of content"
+        section_title:
+          type: string
+          maxLength: 255
+          nullable: true
+          example: "Installation Guide"
+          description: "Section or chapter title"
+        page_number:
+          type: integer
+          minimum: 1
+          nullable: true
+          example: 1
+          description: "Page number in original document"
+        chunk_index:
+          type: integer
+          minimum: 0
+          nullable: true
+          example: 0
+          description: "Index of this chunk within the document"
+        language:
+          type: string
+          maxLength: 10
+          nullable: true
+          example: "en"
+          description: "Document language (ISO 639-1)"
+        tags:
+          type: object
+          nullable: true
+          example:
+            section: "installation"
+            difficulty: "beginner"
+          description: "Document tags and metadata for RAG categorization"
+
+    CollectionSearchRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          example: "How to configure database settings"
+          description: "Search query text"
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 10
+          description: "Maximum number of results to return"
+        offset:
+          type: integer
+          minimum: 0
+          default: 0
+          description: "Number of results to skip for pagination"
+        min_score:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          default: 0.0
+          description: "Minimum relevance score threshold (0-1)"
+        filters:
+          type: object
+          description: "Additional filters to apply to search results"
+          properties:
+            content_type:
+              type: array
+              items:
+                type: string
+                enum: [paragraph, heading, table, list, code, image, metadata]
+              description: "Filter by content types"
+            language:
+              type: string
+              description: "Filter by language code"
+            min_confidence:
+              type: number
+              format: float
+              minimum: 0
+              maximum: 1
+              description: "Minimum confidence score"
+            tags:
+              type: object
+              description: "Filter by document tags"
+
+    # =====================================================
+    # FILE SCHEMAS
+    # =====================================================
+    FileResponse:
+      type: object
+      description: "File for API responses (excludes redundant project_id)"
+      properties:
+        id:
+          type: string
+          format: uuid
+        collection_id:
+          type: string
+          format: uuid
+          nullable: true
+          example: "coll_123e4567-e89b-12d3-a456-426614174000"
+        original_filename:
+          type: string
+          maxLength: 255
+          example: "product_manual.pdf"
+        file_size:
+          type: integer
+          format: int64
+          example: 2048576
+          description: "File size in bytes"
+        content_type:
+          type: string
+          example: "application/pdf"
+        storage_provider:
+          type: string
+          enum: [local, s3, gcs, azure]
+          example: "s3"
+        status:
+          type: string
+          enum: [pending, processing, completed, failed, archived]
+          example: "completed"
+        document_count:
+          type: integer
+          example: 25
+          description: "Number of document chunks created for RAG"
+        total_tokens:
+          type: integer
+          example: 15420
+          description: "Total tokens extracted for RAG processing"
+        language:
+          type: string
+          maxLength: 10
+          example: "en"
+          nullable: true
+        description:
+          type: string
+          maxLength: 1000
+          nullable: true
+          example: "Product documentation for RAG knowledge base"
+        tags:
+          type: object
+          nullable: true
+          example: {"category": "manual", "version": "2.1"}
+        uploaded_by:
+          type: string
+          nullable: true
+          example: "john.doe@company.com"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        deleted_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    FileWithDocuments:
+      allOf:
+        - $ref: '#/components/schemas/FileResponse'
+        - type: object
+          properties:
+            documents:
+              type: array
+              description: "Document chunks extracted from this file for RAG operations"
+              items:
+                $ref: '#/components/schemas/DocumentResponse'
+              default: []
+
+    DocumentResponse:
+      type: object
+      description: "Document chunk for RAG API responses"
+      properties:
+        id:
+          type: string
+          format: uuid
+        file_id:
+          type: string
+          format: uuid
+        collection_id:
+          type: string
+          format: uuid
+          nullable: true
+          example: "coll_123e4567-e89b-12d3-a456-426614174000"
+        document_id:
+          type: string
+          maxLength: 100
+          example: "doc_123_chunk_001"
+        collection_name:
+          type: string
+          maxLength: 255
+          example: "product_docs_v2"
+        document_title:
+          type: string
+          maxLength: 500
+          nullable: true
+          example: "Installation Guide - Chapter 3"
+        content_preview:
+          type: string
+          nullable: true
+          example: "To install the software, first ensure that your system meets..."
+        content_length:
+          type: integer
+          example: 1250
+        token_count:
+          type: integer
+          example: 320
+        chunk_index:
+          type: integer
+          example: 2
+        section_title:
+          type: string
+          maxLength: 255
+          nullable: true
+          example: "Installation Guide"
+        page_number:
+          type: integer
+          nullable: true
+          example: 15
+        content_type:
+          type: string
+          enum: [paragraph, heading, table, list, code, image, metadata]
+          example: "paragraph"
+        language:
+          type: string
+          maxLength: 10
+          example: "en"
+        confidence_score:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          nullable: true
+          example: 0.95
+        tags:
+          type: object
+          nullable: true
+          example: {"section": "installation", "difficulty": "beginner"}
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+
+
+    # =====================================================
+    # SEARCH SCHEMAS
+    # =====================================================
+    SearchResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchResult'
+          description: "Search results ordered by relevance"
+        search_metadata:
+          $ref: '#/components/schemas/SearchMetadata'
+
+    SearchResult:
+      type: object
+      properties:
+        document_id:
+          type: string
+          format: uuid
+          description: "Document chunk ID"
+        file_id:
+          type: string
+          format: uuid
+          description: "Source file ID"
+        relevance_score:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: "Relevance score (0-1, higher is more relevant)"
+        content_preview:
+          type: string
+          description: "Preview of document content with search terms highlighted"
+        document_title:
+          type: string
+          nullable: true
+          description: "Document title or section heading"
+        collection_name:
+          type: string
+          description: "Collection containing this document"
+        content_type:
+          type: string
+          enum: [paragraph, heading, table, list, code, image, metadata]
+          description: "Type of content"
+        chunk_index:
+          type: integer
+          description: "Position of this chunk within the source document"
+        page_number:
+          type: integer
+          nullable: true
+          description: "Page number in source document"
+        section_title:
+          type: string
+          nullable: true
+          description: "Section or chapter title"
+        language:
+          type: string
+          description: "Document language code"
+        confidence_score:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          nullable: true
+          description: "Content extraction confidence score"
+        tags:
+          type: object
+          nullable: true
+          description: "Document metadata tags"
+        created_at:
+          type: string
+          format: date-time
+          description: "Document creation timestamp"
+
+    SearchMetadata:
+      type: object
+      properties:
+        query:
+          type: string
+          description: "Original search query"
+        search_mode:
+          type: string
+          enum: [semantic, keyword, hybrid]
+          description: "Search mode used"
+        total_results:
+          type: integer
+          description: "Total number of matching documents"
+        returned_results:
+          type: integer
+          description: "Number of results returned in this response"
+        search_time_ms:
+          type: integer
+          description: "Search execution time in milliseconds"
+        filters_applied:
+          type: object
+          description: "Filters that were applied to the search"
+        semantic_weight:
+          type: number
+          format: float
+          nullable: true
+          description: "Semantic weight used (hybrid mode only)"
+        keyword_weight:
+          type: number
+          format: float
+          nullable: true
+          description: "Keyword weight used (hybrid mode only)"
+
+
+
+    PaginationMetadata:
+      type: object
+      properties:
+        total:
+          type: integer
+          example: 150
+          description: "Total number of items"
+        limit:
+          type: integer
+          example: 20
+          description: "Number of items per page"
+        offset:
+          type: integer
+          example: 40
+          description: "Number of items skipped"
+        has_more:
+          type: boolean
+          example: true
+          description: "Whether there are more items available"
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              example: "FILE_TOO_LARGE"
+            message:
+              type: string
+              example: "File size exceeds maximum allowed limit"
+            details:
+              type: object
+              nullable: true
+              example: {"max_size": "100MB", "actual_size": "150MB"}
+        request_id:
+          type: string
+          format: uuid
+          example: "req_123e4567-e89b-12d3-a456-426614174000"

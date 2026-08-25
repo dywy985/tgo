@@ -1,0 +1,34 @@
+services:
+  # Adminer (database management UI)
+  adminer:
+    image: adminer:latest
+    container_name: tgo-adminer
+    environment:
+      - ADMINER_DEFAULT_SERVER=postgres
+      - ADMINER_DESIGN=pepa-linha-dark
+      - ADMINER_PLUGINS=tables-filter tinymce
+    ports:
+      - "8888:8080"
+    networks:
+      - tgo-suite_default
+
+  # Redis Insight (Redis management UI)
+  redis-insight:
+    image: redis/redisinsight:latest
+    container_name: tgo-redis-insight
+    ports:
+      - "5540:5540"
+    volumes:
+      - redis-insight-data:/data
+    networks:
+      - tgo-suite_default
+
+volumes:
+  redis-insight-data:
+
+networks:
+  # Reuse the default network from the main compose project so tools
+  # can reach core services by name (postgres, redis, etc.)
+  tgo-suite_default:
+    external: true
+

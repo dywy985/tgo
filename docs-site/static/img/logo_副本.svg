@@ -1,0 +1,5 @@
+<svg width="200" height="200" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="100" cy="100" r="92" fill="none" stroke="#000000" stroke-width="8"/>
+  <!-- 底部弯钩加粗加厚，匹配竖线粗度 -->
+  <path fill="#000000" d="M80 58 L120 50 V72 H132 V92 H120 V115 C120 130 130 135 145 130 V155 C120 170 80 155 80 115 V92 H68 V72 H80 V58 Z"/>
+</svg>

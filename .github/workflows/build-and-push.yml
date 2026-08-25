@@ -1,0 +1,342 @@
+name: Build and push service images to multiple registries
+
+on:
+  push:
+    tags:
+      - 'v*'
+      - 'tgo-*-v*'
+  workflow_dispatch:
+    inputs:
+      services:
+        description: 'Services to build (comma-separated, or leave empty for all except tgo-rag). Example: tgo-api,tgo-web'
+        required: false
+        default: ''
+      push_latest:
+        description: 'Whether to push the "latest" tag for this build'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  discover-services:
+    name: Discover service directories under repos/
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.discover.outputs.services }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Discover services
+        id: discover
+        run: |
+          set -euo pipefail
+
+          echo "=== Service Discovery ==="
+          echo "Trigger: ${{ github.event_name }}"
+          echo "Ref: ${{ github.ref_name }}"
+          echo ""
+
+          # Priority 1: workflow_dispatch with specified services
+          if [ -n "${{ github.event.inputs.services }}" ]; then
+            services_input="${{ github.event.inputs.services }}"
+            echo "✓ Using manually specified services: $services_input"
+
+            json="["
+            first=1
+            for s in $(echo "$services_input" | tr ',' '\n'); do
+              s=$(echo "$s" | xargs)  # Remove leading/trailing whitespace
+              if [ -z "$s" ]; then continue; fi
+              if [ $first -eq 0 ]; then
+                json="$json,"
+              fi
+              json="$json\"$s\""
+              first=0
+            done
+            json="$json]"
+
+            echo "Services to build: $json"
+            echo "services=$json" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Priority 2: Tag prefix (e.g., tgo-api-v1.0.0)
+          tag="${{ github.ref_name }}"
+          if [[ $tag =~ ^(tgo-[a-z-]+)-v ]]; then
+            service="${BASH_REMATCH[1]}"
+            echo "✓ Tag prefix detected: $tag"
+            echo "✓ Building specific service: $service"
+            echo "services=[\"$service\"]" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Priority 3: Auto-discover all services
+          echo "✓ Auto-discovering all services..."
+
+          if [ ! -d "repos" ]; then
+            echo "repos directory not found" >&2
+            exit 1
+          fi
+
+          services=()
+          for dir in repos/*/; do
+            [ -d "$dir" ] || continue
+            name="${dir#repos/}"
+            name="${name%/}"
+
+            # Skip tgo-rag during auto-discovery as it takes too long to build.
+            # You can still build it manually via workflow_dispatch or specific tags (e.g., tgo-rag-v1.0.0).
+            if [ "$name" == "tgo-rag" ]; then
+              echo "− Skipping tgo-rag (auto-discovery excluded)"
+              continue
+            fi
+
+            # Ensure the service has a Dockerfile
+            if [ -f "repos/$name/Dockerfile" ]; then
+              services+=("$name")
+            fi
+          done
+
+          if [ "${#services[@]}" -eq 0 ]; then
+            echo "No service directories with Dockerfile found under repos/" >&2
+            exit 1
+          fi
+
+          json="["
+          first=1
+          for s in "${services[@]}"; do
+            if [ $first -eq 0 ]; then
+              json="$json,"
+            fi
+            json="$json\"$s\""
+            first=0
+          done
+          json="$json]"
+
+          echo "Discovered services: $json"
+          echo "services=$json" >> "$GITHUB_OUTPUT"
+
+  build-and-push:
+    name: Build and push Docker images
+    needs: discover-services
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJson(needs.discover-services.outputs.services) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Display build information
+        run: |
+          echo "=== Build Information ==="
+          echo "Service: ${{ matrix.service }}"
+          echo "Tag/Version: ${{ github.ref_name }}"
+          echo "Commit SHA: ${{ github.sha }}"
+          echo "Repository: ${{ github.repository }}"
+          echo "Trigger: ${{ github.event_name }}"
+          echo ""
+
+      - name: Set build metadata
+        run: |
+          echo "BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_ENV
+          
+          REF_NAME="${{ github.ref_name }}"
+          EVENT_NAME="${{ github.event_name }}"
+          
+          # Determine if we should skip 'latest' tag
+          # Skip for: workflow_dispatch (manual) unless push_latest is true, or -dev suffix tags
+          PUSH_LATEST_INPUT="${{ github.event.inputs.push_latest }}"
+          if [ "$EVENT_NAME" == "workflow_dispatch" ]; then
+            # Manual trigger: use branch name as tag
+            echo "BUILD_TYPE=manual" >> $GITHUB_ENV
+            if [ "$PUSH_LATEST_INPUT" == "true" ]; then
+              echo "IS_DEV_BUILD=false" >> $GITHUB_ENV
+              echo "🔧 Manual build from branch: $REF_NAME (✓ will update 'latest' tag per request)"
+            else
+              echo "IS_DEV_BUILD=true" >> $GITHUB_ENV
+              echo "🔧 Manual build from branch: $REF_NAME (will not update 'latest' tag)"
+            fi
+          elif [[ "$REF_NAME" == *-dev ]]; then
+            # Dev tag: skip 'latest'
+            echo "IS_DEV_BUILD=true" >> $GITHUB_ENV
+            echo "BUILD_TYPE=dev" >> $GITHUB_ENV
+            echo "⚠️ Dev build detected: $REF_NAME (will not update 'latest' tag)"
+          else
+            # Release tag: update 'latest'
+            echo "IS_DEV_BUILD=false" >> $GITHUB_ENV
+            echo "BUILD_TYPE=release" >> $GITHUB_ENV
+            echo "✓ Release build: $REF_NAME (will update 'latest' tag)"
+          fi
+          
+          # Sanitize branch name for use as Docker tag (replace / with -)
+          SANITIZED_TAG=$(echo "$REF_NAME" | sed 's/[^a-zA-Z0-9._-]/-/g')
+          echo "IMAGE_VERSION=$SANITIZED_TAG" >> $GITHUB_ENV
+          echo "📦 Image version tag: $SANITIZED_TAG"
+
+      - name: Free up disk space
+        if: matrix.service == 'tgo-rag'
+        run: |
+          echo "Disk space before cleanup:"
+          df -h
+
+          # Remove unnecessary pre-installed software
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+
+          # Clean up apt cache
+          sudo apt-get clean
+          sudo apt-get autoremove -y
+          sudo apt-get autoclean -y
+
+          # Clean up Docker system
+          docker system prune -af --volumes
+
+          echo "Disk space after cleanup:"
+          df -h
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/amd64,linux/arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          platforms: linux/amd64,linux/arm64
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to Alibaba Cloud Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: registry.cn-shanghai.aliyuncs.com
+          username: ${{ secrets.ALIYUN_REGISTRY_USERNAME }}
+          password: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
+
+      - name: Generate image tags
+        id: tags
+        run: |
+          SERVICE="${{ matrix.service }}"
+          VERSION="${{ env.IMAGE_VERSION }}"
+          
+          echo "=== Tag Generation ==="
+          echo "Service: $SERVICE"
+          echo "Version: $VERSION"
+          echo "Build type: ${{ env.BUILD_TYPE }}"
+          echo ""
+          
+          # Base tags (always included)
+          TAGS="ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}/${SERVICE}:${VERSION}"
+          TAGS="${TAGS},tgoai/${SERVICE}:${VERSION}"
+          TAGS="${TAGS},registry.cn-shanghai.aliyuncs.com/tgoai/${SERVICE}:${VERSION}"
+          
+          # Add 'latest' tags only for release builds (not dev or manual)
+          if [ "${{ env.IS_DEV_BUILD }}" != "true" ]; then
+            echo "✓ Adding 'latest' tags (release build)"
+            TAGS="${TAGS},ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}/${SERVICE}:latest"
+            TAGS="${TAGS},tgoai/${SERVICE}:latest"
+            TAGS="${TAGS},registry.cn-shanghai.aliyuncs.com/tgoai/${SERVICE}:latest"
+          else
+            echo "⚠️ Skipping 'latest' tags (${{ env.BUILD_TYPE }} build)"
+          fi
+          
+          echo ""
+          echo "Generated tags:"
+          echo "$TAGS" | tr ',' '\n'
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+
+      - name: Build and push image for ${{ matrix.service }}
+        timeout-minutes: 60
+        uses: docker/build-push-action@v6
+        with:
+          context: ./repos/${{ matrix.service }}
+          file: ./repos/${{ matrix.service }}/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ env.IMAGE_VERSION }}
+            org.opencontainers.image.title=${{ matrix.service }}
+          build-args: |
+            SERVICE_NAME=${{ matrix.service }}
+            IMAGE_TAG=${{ env.IMAGE_VERSION }}
+            GIT_SHA=${{ github.sha }}
+            APP_VERSION=${{ env.IMAGE_VERSION }}
+            GIT_COMMIT=${{ github.sha }}
+            BUILD_TIME=${{ env.BUILD_TIME }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify multi-architecture manifest
+        run: |
+          echo "Verifying multi-architecture manifest for ${{ matrix.service }}..."
+          
+          # Use version tag for verification (always exists)
+          IMAGE_TAG="ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}/${{ matrix.service }}:${{ env.IMAGE_VERSION }}"
+          
+          echo "Inspecting: $IMAGE_TAG"
+          docker buildx imagetools inspect "$IMAGE_TAG"
+
+          # Verify both architectures are present
+          if docker buildx imagetools inspect "$IMAGE_TAG" | grep -q "linux/amd64"; then
+            echo "✓ AMD64 architecture found"
+          else
+            echo "✗ AMD64 architecture missing"
+            exit 1
+          fi
+
+          if docker buildx imagetools inspect "$IMAGE_TAG" | grep -q "linux/arm64"; then
+            echo "✓ ARM64 architecture found"
+          else
+            echo "✗ ARM64 architecture missing"
+            exit 1
+          fi
+
+          echo ""
+          echo "=== Build Summary ==="
+          echo "Multi-architecture build verified successfully!"
+          
+          case "${{ env.BUILD_TYPE }}" in
+            manual)
+              echo "🔧 Manual build from branch '${{ github.ref_name }}'"
+              echo "📦 Image tag: ${{ env.IMAGE_VERSION }}"
+              if [ "${{ env.IS_DEV_BUILD }}" == "false" ]; then
+                echo "✓ 'latest' tag was updated per manual request"
+              else
+                echo "⚠️ 'latest' tag was NOT updated"
+              fi
+              ;;
+            dev)
+              echo "🧪 Dev build: ${{ env.IMAGE_VERSION }}"
+              echo "⚠️ 'latest' tag was NOT updated"
+              ;;
+            release)
+              echo "🚀 Release build: ${{ env.IMAGE_VERSION }}"
+              echo "✓ 'latest' tag was updated"
+              ;;
+          esac
+

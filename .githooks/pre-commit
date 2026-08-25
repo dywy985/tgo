@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Git pre-commit hook to automatically rebuild bootstrap_cn.sh when bootstrap.sh changes
+#
+# Installation:
+#   cp .githooks/pre-commit .git/hooks/pre-commit
+#   chmod +x .git/hooks/pre-commit
+#
+# Or configure Git to use .githooks directory:
+#   git config core.hooksPath .githooks
+
+set -e
+
+# Check if bootstrap.sh is being committed
+if git diff --cached --name-only | grep -q "^bootstrap.sh$"; then
+  echo "[pre-commit] bootstrap.sh changed. Running build-bootstrap.sh..."
+  
+  # Run the build script
+  if [ -x ./build-bootstrap.sh ]; then
+    ./build-bootstrap.sh
+    
+    # Add the generated file to the commit
+    git add bootstrap_cn.sh
+    
+    echo "[pre-commit] bootstrap_cn.sh regenerated and added to commit."
+  else
+    echo "[pre-commit] WARNING: build-bootstrap.sh not found or not executable!" >&2
+    echo "[pre-commit] Please run './build-bootstrap.sh' manually before committing." >&2
+    exit 1
+  fi
+fi
+
+exit 0
+

@@ -1,0 +1,73 @@
+name: Publish tgo-widget-miniprogram
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'repos/tgo-widget-miniprogram/**'
+  workflow_dispatch:
+    inputs:
+      version_bump:
+        description: 'Version bump type'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+defaults:
+  run:
+    working-directory: repos/tgo-widget-miniprogram
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Check if version already published
+        id: version-check
+        if: github.event_name == 'push'
+        run: |
+          LOCAL=$(node -p "require('./package.json').version")
+          REMOTE=$(npm view tgo-widget-miniprogram version 2>/dev/null || echo "0.0.0")
+          echo "local=$LOCAL remote=$REMOTE"
+          if [ "$LOCAL" = "$REMOTE" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install dependencies
+        if: steps.version-check.outputs.skip != 'true'
+        run: npm install
+
+      - name: Build
+        if: steps.version-check.outputs.skip != 'true'
+        run: npm run build
+
+      - name: Bump version (manual trigger)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          npm version ${{ inputs.version_bump }} -m "chore(widget-miniprogram): bump to %s"
+
+      - name: Publish to npm
+        if: steps.version-check.outputs.skip != 'true'
+        run: npm publish --access public --provenance
+
+      - name: Push version commit and tag (manual trigger)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git push
+          git push --tags

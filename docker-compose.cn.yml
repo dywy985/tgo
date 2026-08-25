@@ -1,0 +1,69 @@
+# Docker Compose override for China network environment
+# This file overrides image sources to use Alibaba Cloud Container Registry (ACR)
+# for faster image pulling in mainland China.
+#
+# Usage: ./tgo.sh install --cn
+#
+# This file is part of the project and can be manually edited if needed.
+
+name: tgo-suite
+
+services:
+  # Infrastructure services - using Alibaba Cloud mirrors
+  postgres:
+    image: registry.cn-shanghai.aliyuncs.com/tgoai/pgvector:pg16
+
+  redis:
+    image: registry.cn-shanghai.aliyuncs.com/tgoai/redis:7-alpine
+
+  # wukongim
+  wukongim:
+    image: registry.cn-shanghai.aliyuncs.com/wukongim/wukongim:v2.2.5-20260422
+
+  # TGO application services - using Alibaba Cloud ACR
+  tgo-rag-worker:
+    image: registry.cn-shanghai.aliyuncs.com/tgoai/tgo-rag:latest
+
+  tgo-rag-beat:
+    image: registry.cn-shanghai.aliyuncs.com/tgoai/tgo-rag:latest
+
+  tgo-celery-flower:
+    image: registry.cn-shanghai.aliyuncs.com/tgoai/flower:2.0
+
+  tgo-rag:
+    image: registry.cn-shanghai.aliyuncs.com/tgoai/tgo-rag:latest
+
+  tgo-ai:
+    image: registry.cn-shanghai.aliyuncs.com/tgoai/tgo-ai:latest
+
+  tgo-api:
+    image: registry.cn-shanghai.aliyuncs.com/tgoai/tgo-api:latest
+
+  tgo-plugin-runtime:
+    image: registry.cn-shanghai.aliyuncs.com/tgoai/tgo-plugin-runtime:latest
+
+  tgo-device-control:
+    image: registry.cn-shanghai.aliyuncs.com/tgoai/tgo-device-control:latest
+    
+  tgo-platform:
+    image: registry.cn-shanghai.aliyuncs.com/tgoai/tgo-platform:latest
+
+  tgo-workflow:
+    image: registry.cn-shanghai.aliyuncs.com/tgoai/tgo-workflow:latest
+
+  tgo-workflow-worker:
+    image: registry.cn-shanghai.aliyuncs.com/tgoai/tgo-workflow:latest
+
+  tgo-web:
+    image: registry.cn-shanghai.aliyuncs.com/tgoai/tgo-web:latest
+
+  tgo-widget-js:
+    image: registry.cn-shanghai.aliyuncs.com/tgoai/tgo-widget-js:latest
+
+  # Nginx and Certbot services - using Alibaba Cloud mirrors
+  nginx:
+    image: registry.cn-shanghai.aliyuncs.com/tgoai/nginx:alpine
+
+  certbot:
+    image: registry.cn-shanghai.aliyuncs.com/tgoai/certbot:latest
+

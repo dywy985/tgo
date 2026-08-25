@@ -1,0 +1,306 @@
+.heroBanner {
+  padding: 4rem 0;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+  background-color: #fff;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bgGlow {
+  position: absolute;
+  top: -30%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 120%;
+  height: 100%;
+  background: radial-gradient(circle, rgba(78, 115, 223, 0.12) 0%, rgba(168, 52, 234, 0.05) 40%, rgba(255, 255, 255, 0) 70%);
+  z-index: 0;
+  pointer-events: none;
+  filter: blur(40px);
+}
+
+[data-theme='dark'] .heroBanner {
+  background-color: #0f172a;
+}
+[data-theme='dark'] .bgGlow {
+  background: radial-gradient(circle, rgba(78, 115, 223, 0.25) 0%, rgba(0, 0, 0, 0) 70%);
+}
+
+.heroContent {
+  position: relative;
+  z-index: 1;
+}
+
+.heroTitle {
+  font-size: 4rem;
+  font-weight: 800;
+  margin-bottom: 1rem;
+  line-height: 1.1;
+  color: #1a1a1a;
+  letter-spacing: -0.02em;
+}
+
+.heroTitleHighlight {
+  color: #4e73df;
+  background: linear-gradient(135deg, #4e73df 0%, #2e59d9 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* 打字机动画样式 */
+.typewriterWrapper {
+  display: inline-block;
+  min-width: 3em;
+  text-align: left;
+  color: #1a1a1a;
+  position: relative;
+  margin-left: 0.2em;
+}
+
+.cursor {
+  display: inline-block;
+  margin-left: 2px;
+  font-weight: 100;
+  color: #4e73df;
+  opacity: 1;
+  transition: opacity 0.1s;
+}
+
+.cursorBlink {
+  opacity: 0;
+}
+
+.heroSubtitle {
+  font-size: 1.4rem;
+  color: #555;
+  margin-bottom: 3rem;
+  font-weight: 500;
+}
+
+/* 集成展示区域 - 轨道布局 */
+.integrationsSection {
+  margin-bottom: 4rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.orbitContainer {
+  position: relative;
+  width: 500px;
+  height: 500px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 轨道连线 SVG */
+.orbitLines {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  pointer-events: none;
+  animation: spin 60s linear infinite;
+}
+
+.orbitCircle {
+  fill: none;
+  stroke: rgba(78, 115, 223, 0.1);
+  stroke-width: 1;
+  stroke-dasharray: 8 8;
+}
+
+/* 中心 Logo */
+.centerLogo {
+  position: relative;
+  width: 90px;
+  height: 90px;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 30px rgba(78, 115, 223, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+
+.logoImg {
+  width: 50px;
+  height: 50px;
+  object-fit: contain;
+}
+
+/* 中心呼吸光晕 */
+.pulseRing {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  border: 2px solid rgba(78, 115, 223, 0.3);
+  opacity: 0;
+  animation: pulseRing 3s ease-out infinite;
+}
+
+/* 卫星图标 */
+.satelliteWrapper {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 48px;
+  height: 48px;
+  margin-top: -24px;
+  margin-left: -24px;
+  /* 核心定位逻辑：旋转 -> 推远 -> 反向旋转 */
+  transform: rotate(var(--angle)) translate(var(--radius)) rotate(calc(-1 * var(--angle)));
+  z-index: 5;
+}
+
+.satelliteIcon {
+  width: 100%;
+  height: 100%;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--icon-color);
+  font-size: 1.5rem;
+  transition: transform 0.3s ease;
+  /* 浮动动画 */
+  animation: float 4s ease-in-out infinite;
+  animation-delay: var(--delay);
+}
+
+/* 特殊处理 TikTok 在暗色模式下的颜色 */
+[data-theme='dark'] .satelliteIcon[title='TikTok'] {
+  color: #fff !important;
+}
+
+.satelliteIcon:hover {
+  transform: scale(1.2);
+  box-shadow: 0 8px 20px rgba(78, 115, 223, 0.2);
+  z-index: 20;
+  cursor: pointer;
+}
+
+/* 按钮组 */
+.buttons {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1.5rem;
+  margin-top: 2rem;
+  margin-bottom: 4rem;
+  z-index: 10;
+  position: relative;
+}
+
+.buttons :global(.button) {
+  border-radius: 50px;
+  padding: 14px 36px;
+  font-size: 1.1rem;
+  font-weight: 600;
+  transition: all 0.2s ease;
+}
+
+.buttons :global(.button--primary) {
+  background-color: #000;
+  border: 2px solid #000;
+  color: #fff;
+}
+.buttons :global(.button--primary):hover {
+  background-color: #333;
+  border-color: #333;
+  transform: translateY(-2px);
+}
+
+.buttons :global(.button--secondary) {
+  background-color: #fff;
+  border: 2px solid #e2e8f0;
+  color: #1a1a1a;
+}
+.buttons :global(.button--secondary):hover {
+  border-color: #000;
+  color: #000;
+  background-color: #fff;
+  transform: translateY(-2px);
+}
+
+/* 产品截图区域 */
+.productImageSection {
+  margin-top: 4rem;
+  margin-bottom: 2rem;
+  width: 100%;
+  max-width: 1200px;
+  margin-left: auto;
+  margin-right: auto;
+  position: relative;
+  z-index: 10;
+}
+
+.productImage {
+  width: 100%;
+  height: auto;
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.productImage:hover {
+  transform: translateY(-8px);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.2);
+}
+
+[data-theme='dark'] .productImage {
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+[data-theme='dark'] .productImage:hover {
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.7);
+}
+
+/* 动画定义 */
+@keyframes pulseRing {
+  0% { width: 100%; height: 100%; opacity: 0.8; border-width: 2px; }
+  100% { width: 250%; height: 250%; opacity: 0; border-width: 0; }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* 响应式适配 */
+@media screen and (max-width: 768px) {
+  .heroTitle { font-size: 2.5rem; }
+  .orbitContainer { transform: scale(0.7); margin: -50px 0; } /* 缩小整个轨道图 */
+  .buttons { flex-direction: column; width: 100%; }
+  .buttons :global(.button) { width: 100%; }
+  .productImageSection { padding: 0 1rem; }
+  .productImage { border-radius: 12px; }
+}
+
+/* 暗色适配 */
+[data-theme='dark'] .heroTitle { color: #fff; }
+[data-theme='dark'] .heroSubtitle { color: #cbd5e1; }
+[data-theme='dark'] .typewriterWrapper { color: #fff; }
+[data-theme='dark'] .centerLogo, [data-theme='dark'] .satelliteIcon { background: #1e293b; box-shadow: none; border: 1px solid #334155; }
+[data-theme='dark'] .orbitCircle { stroke: rgba(255,255,255,0.1); }
+[data-theme='dark'] .buttons :global(.button--primary) { background: #fff; color: #000; border-color: #fff; }
+[data-theme='dark'] .buttons :global(.button--secondary) { background: transparent; border-color: #fff; color: #fff; }
