@@ -2,7 +2,7 @@ import React from 'react';
 import { NavLink } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Settings as SettingsIcon, Puzzle } from 'lucide-react';
-import { FiSettings, FiCpu, FiInfo, FiLogOut, FiUsers, FiUser, FiBell } from 'react-icons/fi';
+import { FiSettings, FiCpu, FiInfo, FiLogOut, FiUsers, FiUser, FiBell, FiMessageSquare } from 'react-icons/fi';
 import { useAuthStore } from '@/stores/authStore';
 import OnboardingSidebarPanel from '@/components/onboarding/OnboardingSidebarPanel';
 
@@ -22,6 +22,7 @@ const SettingsSidebar: React.FC<SettingsSidebarProps> = ({ className = '' }) => 
     { id: 'staff', label: t('settings.menu.staff', '人工坐席') },
     { id: 'providers', label: t('settings.menu.providers', '模型提供商') },
     { id: 'plugins', label: t('settings.menu.plugins', '插件管理') },
+    { id: 'wecom-debug', label: '企微调试' },
   ];
 
   // Filter settings items based on user role
@@ -40,6 +41,7 @@ const SettingsSidebar: React.FC<SettingsSidebarProps> = ({ className = '' }) => 
     staff: <FiUsers className="w-4 h-4" />,
     providers: <FiCpu className="w-4 h-4" />,
     plugins: <Puzzle className="w-4 h-4" />,
+    'wecom-debug': <FiMessageSquare className="w-4 h-4" />,
   };
 
   return (

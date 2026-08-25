@@ -228,6 +228,9 @@ services:
 
   tgo-web:
     image: node:20-bookworm-slim
+    # 关键: 清除主 compose 的 build (Dockerfile 是 nginx 版), 否则 up --build 会把
+    # nginx 镜像 tag 成 node:20-bookworm-slim 覆盖官方镜像, 导致 serve.mjs 起不来
+    build: !reset null
     working_dir: /workspace
     env_file:
       - .env.dev

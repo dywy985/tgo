@@ -55,6 +55,11 @@ def _to_msg_type_int(raw) -> int:
     return _WECOM_MSG_TYPE_MAP.get(str(raw or "").lower(), 1)
 
 
+def _is_question_text(text: str) -> bool:
+    """问句判定: 含中英文问号。"""
+    return ("？" in text) or ("?" in text)
+
+
 class WeComChannelListener:
     """WeCom consumer that processes pending wecom_inbox rows asynchronously.
 
@@ -458,7 +463,14 @@ class WeComChannelListener:
                 if not await self._claim_record(db, rec):
                     continue
 
+                source_type = getattr(rec, "source_type", None) or p.platform_type or ""
+
                 try:
+                    # 全量转发模式下, 非问句消息不调 AI (省 token), 直接完成
+                    if source_type == "wecom_reader" and rec.content and not _is_question_text(rec.content):
+                        await self._finalize_success(db, rec, None)
+                        continue
+
                     # Build mapped message
                     mapped_raw: dict[str, Any] = self._build_mapped_message(p, rec)
 

@@ -44,6 +44,7 @@ import ModelProvidersSettings from '../components/settings/ModelProvidersSetting
 import PluginsSettings from '../components/settings/PluginsSettings';
 import AboutSettings from '../components/settings/AboutSettings';
 import MarkdownTestPage from '../pages/MarkdownTestPage';
+import WecomDebugPanel from '../pages/WecomDebugPanel';
 
 // Import SaaS routes if they exist (will be resolved via Vite alias or empty default)
 // @ts-ignore
@@ -98,6 +99,7 @@ export const router = createBrowserRouter([
           { path: 'staff', element: <StaffSettings /> },
           { path: 'providers', element: <ModelProvidersSettings /> },
           { path: 'plugins', element: <PluginsSettings /> },
+          { path: 'wecom-debug', element: <WecomDebugPanel /> },
           { path: 'about', element: <AboutSettings /> },
           // Inject SaaS settings routes
           ...(saasRoutes || [])

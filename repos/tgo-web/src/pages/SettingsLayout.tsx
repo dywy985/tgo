@@ -2,7 +2,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Outlet, NavLink } from 'react-router-dom';
 import { Settings as SettingsIcon, Puzzle } from 'lucide-react';
-import { FiSettings, FiCpu, FiUsers, FiUser, FiBell } from 'react-icons/fi';
+import { FiSettings, FiCpu, FiUsers, FiUser, FiBell, FiMessageSquare } from 'react-icons/fi';
 import SettingsSidebar from '@/components/settings/SettingsSidebar';
 
 const SettingsLayout: React.FC = () => {
@@ -15,6 +15,7 @@ const SettingsLayout: React.FC = () => {
     { id: 'staff', label: t('settings.menu.staff', '人工坐席') },
     { id: 'providers', label: t('settings.menu.providers', '模型提供商') },
     { id: 'plugins', label: t('settings.menu.plugins', '插件管理') },
+    { id: 'wecom-debug', label: '企微调试' },
   ];
 
   const iconMap: Record<string, React.ReactNode> = {
@@ -24,6 +25,7 @@ const SettingsLayout: React.FC = () => {
     staff: <FiUsers className="w-4 h-4" />,
     providers: <FiCpu className="w-4 h-4" />,
     plugins: <Puzzle className="w-4 h-4" />,
+    'wecom-debug': <FiMessageSquare className="w-4 h-4" />,
   };
 
   return (

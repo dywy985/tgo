@@ -39,6 +39,7 @@ from app.api.v1.endpoints import (
     system,
     store,
     utils,
+    debug_wecom,
 )
 
 api_router = APIRouter()
@@ -98,6 +99,13 @@ api_router.include_router(
     platforms.router,
     prefix="/platforms",
     tags=["Platforms"]
+)
+
+# 企微通道调试 (设置页"企微调试"面板)
+api_router.include_router(
+    debug_wecom.router,
+    prefix="/debug",
+    tags=["Debug WeCom"]
 )
 
 api_router.include_router(
