@@ -40,6 +40,7 @@
     "react-router-dom": "^7.8.0",
     "react-syntax-highlighter": "^16.1.0",
     "reactflow": "^11.11.4",
+    "recharts": "^3.10.1",
     "yet-another-react-lightbox": "^3.25.0",
     "zustand": "^5.0.8"
   },

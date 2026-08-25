@@ -23,6 +23,18 @@ from app.models.permission import Permission, RolePermission, ProjectRolePermiss
 from app.models.visitor_assignment_rule import VisitorAssignmentRule, DEFAULT_ASSIGNMENT_PROMPT
 from app.models.visitor_assignment_history import VisitorAssignmentHistory, AssignmentSource
 from app.models.visitor_session import VisitorSession, SessionStatus
+from app.models.ticket import (
+    Ticket,
+    TicketComment,
+    TicketStatusHistory,
+    TicketSettings,
+    TicketRoute,
+    TicketStatus,
+    TicketPriority,
+    TicketSource,
+    TicketResolveType,
+    TICKET_STATUS_TRANSITIONS,
+)
 from app.models.visitor_waiting_queue import (
     VisitorWaitingQueue,
     WaitingStatus,
@@ -32,6 +44,7 @@ from app.models.visitor_waiting_queue import (
 )
 from app.models.channel_memory_clearance import ChannelMemoryClearance, ClearanceUserType
 from app.models.store_credential import StoreCredential
+from app.models.agent_usage_record import AgentUsageRecord
 
 __all__ = [
     # Models
@@ -65,9 +78,15 @@ __all__ = [
     "VisitorAssignmentHistory",
     "VisitorSession",
     "VisitorWaitingQueue",
+    "Ticket",
+    "TicketComment",
+    "TicketStatusHistory",
+    "TicketSettings",
+    "TicketRoute",
     "URGENCY_PRIORITY_MAP",
     "ChannelMemoryClearance",
     "StoreCredential",
+    "AgentUsageRecord",
     # Enums
     "PlatformType",
     "StaffRole",
@@ -79,4 +98,10 @@ __all__ = [
     "QueueUrgency",
     "TagCategory",
     "ClearanceUserType",
+    # Ticket enums
+    "TicketStatus",
+    "TicketPriority",
+    "TicketSource",
+    "TicketResolveType",
+    "TICKET_STATUS_TRANSITIONS",
 ]

@@ -30,8 +30,16 @@ interface SendResult {
   error?: string;
 }
 
+interface TriggerConfig {
+  mode: 'hybrid' | 'mention' | 'auto' | 'disabled';
+  score_threshold: number;
+  llm_prefilter: boolean;
+  ignore_members: string[];
+}
+
 const WecomDebugPanel: React.FC = () => {
   const { t } = useTranslation();
+  const [tab, setTab] = useState<'messages' | 'send' | 'trigger'>('messages');
   const [sessions, setSessions] = useState<WecomSession[]>([]);
   const [currentConv, setCurrentConv] = useState<string>('');
   const [messages, setMessages] = useState<WecomMessage[]>([]);
@@ -47,6 +55,42 @@ const WecomDebugPanel: React.FC = () => {
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState<SendResult | null>(null);
   const [error, setError] = useState('');
+
+  // 触发配置
+  const [triggerCfg, setTriggerCfg] = useState<TriggerConfig>({
+    mode: 'hybrid', score_threshold: 60, llm_prefilter: false, ignore_members: [],
+  });
+  const [savingTrigger, setSavingTrigger] = useState(false);
+  const [triggerSaved, setTriggerSaved] = useState(false);
+
+  const loadTrigger = useCallback(async () => {
+    try {
+      const data = await apiClient.get<{ trigger: TriggerConfig }>('/v1/debug/wecom/trigger');
+      setTriggerCfg({ ...data.trigger });
+    } catch (e: any) {
+      setError('加载触发配置失败: ' + (e?.getUserMessage?.() || e?.message || e));
+    }
+  }, []);
+
+  const saveTrigger = async () => {
+    setSavingTrigger(true);
+    setTriggerSaved(false);
+    try {
+      await apiClient.put('/v1/debug/wecom/trigger', {
+        trigger: {
+          ...triggerCfg,
+          ignore_members: triggerCfg.ignore_members.join(',').split(/[,，\s]+/).map((s: string) => s.trim()).filter(Boolean),
+        },
+      });
+      setTriggerSaved(true);
+      setError('');
+      setTimeout(() => setTriggerSaved(false), 2000);
+    } catch (e: any) {
+      setError('保存触发配置失败: ' + (e?.getUserMessage?.() || e?.message || e));
+    } finally {
+      setSavingTrigger(false);
+    }
+  };
 
   const loadSessions = useCallback(async () => {
     setLoadingSessions(true);
@@ -75,7 +119,7 @@ const WecomDebugPanel: React.FC = () => {
     }
   }, []);
 
-  useEffect(() => { loadSessions(); }, [loadSessions]);
+  useEffect(() => { loadSessions(); loadTrigger(); }, [loadSessions, loadTrigger]);
 
   const selectConv = (conv: string, name: string) => {
     setCurrentConv(conv);
@@ -133,6 +177,23 @@ const WecomDebugPanel: React.FC = () => {
 
       {error && <div className="text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 px-3 py-2 rounded-md">{error}</div>}
 
+      <div className="flex gap-1 mb-2">
+        {([
+          ['messages', '聊天记录'],
+          ['send', '发送调试'],
+          ['trigger', '触发设置'],
+        ] as Array<['messages' | 'send' | 'trigger', string]>).map(([id, label]) => (
+          <button
+            key={id}
+            onClick={() => setTab(id)}
+            className={`px-4 py-1.5 rounded-md text-sm font-medium ${
+              tab === id ? 'bg-blue-500 text-white' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300'
+            }`}
+          >{label}</button>
+        ))}
+      </div>
+
+      {tab !== 'trigger' ? (
       <div className="flex-1 flex gap-4 min-h-0">
         {/* 会话列表 */}
         <div className="w-56 shrink-0 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 flex flex-col">
@@ -277,6 +338,66 @@ const WecomDebugPanel: React.FC = () => {
           </div>
         </div>
       </div>
+      ) : (
+      /* ---------- 触发设置 ---------- */
+      <div className="max-w-lg bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 flex flex-col gap-3">
+        <div className="text-sm font-medium text-gray-700 dark:text-gray-200">AI 触发规则</div>
+        <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
+          消息进入后会先做规则评分（0-100，零 token），再按此配置决定是否调用 AI 回答。
+          @机器人 的消息<b>必定回复</b>（不占评分）。
+        </p>
+
+        <label className="text-xs text-gray-500 dark:text-gray-400">触发模式</label>
+        <select
+          value={triggerCfg.mode}
+          onChange={(e) => setTriggerCfg({ ...triggerCfg, mode: e.target.value as TriggerConfig['mode'] })}
+          className="px-2 py-1.5 rounded-md text-sm border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200"
+        >
+          <option value="hybrid">hybrid（@必回 + 评分达标自动回）</option>
+          <option value="auto">auto（纯评分，不@也回高分问题）</option>
+          <option value="mention">mention（仅 @机器人 才回）</option>
+          <option value="disabled">disabled（关闭 AI 自动回复）</option>
+        </select>
+
+        <label className="text-xs text-gray-500 dark:text-gray-400">评分阈值（0-100，默认 60）</label>
+        <input
+          type="number" min={1} max={100}
+          value={triggerCfg.score_threshold}
+          onChange={(e) => setTriggerCfg({ ...triggerCfg, score_threshold: Number(e.target.value) })}
+          className="px-2 py-1.5 rounded-md text-sm border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200"
+        />
+        <div className="text-xs text-gray-400">
+          参考：问句+40 ｜ 求助词(报错/打不开/登录不上)+40 ｜ 疑问词(怎么/如何)+30 ｜ 产品词(K6/K8/K9)+20 ｜ 广告-50 ｜ 闲聊-30
+        </div>
+
+        <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-200">
+          <input
+            type="checkbox"
+            checked={triggerCfg.llm_prefilter}
+            onChange={(e) => setTriggerCfg({ ...triggerCfg, llm_prefilter: e.target.checked })}
+            className="w-4 h-4"
+          />
+          LLM 预判（模糊区消息交给 AI 判断是否客户问题，每次约 200 token）
+        </label>
+
+        <label className="text-xs text-gray-500 dark:text-gray-400">忽略成员（逗号分隔，这些人的消息不触发 AI）</label>
+        <input
+          value={triggerCfg.ignore_members.join(',')}
+          onChange={(e) => setTriggerCfg({ ...triggerCfg, ignore_members: e.target.value.split(',') })}
+          placeholder="如：张三,李四"
+          className="px-2 py-1.5 rounded-md text-sm border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200"
+        />
+
+        <button
+          onClick={saveTrigger}
+          disabled={savingTrigger}
+          className="px-3 py-2 rounded-md text-sm font-medium text-white bg-blue-500 hover:bg-blue-600 disabled:opacity-50"
+        >
+          {savingTrigger ? '保存中...' : '保存配置'}
+        </button>
+        {triggerSaved && <div className="text-xs text-teal-600 dark:text-teal-400">✓ 已保存</div>}
+      </div>
+      )}
     </div>
   );
 };

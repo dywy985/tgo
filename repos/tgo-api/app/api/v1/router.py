@@ -28,6 +28,7 @@ from app.api.v1.endpoints import (
     staff,
     tags,
     visitors,
+    tickets,
     visitor_assignment_rules,
     visitor_waiting_queue,
     chat,
@@ -40,6 +41,7 @@ from app.api.v1.endpoints import (
     store,
     utils,
     debug_wecom,
+    stats,
 )
 
 api_router = APIRouter()
@@ -96,6 +98,12 @@ api_router.include_router(
 )
 
 api_router.include_router(
+    tickets.router,
+    prefix="/tickets",
+    tags=["Tickets"]
+)
+
+api_router.include_router(
     platforms.router,
     prefix="/platforms",
     tags=["Platforms"]
@@ -106,6 +114,13 @@ api_router.include_router(
     debug_wecom.router,
     prefix="/debug",
     tags=["Debug WeCom"]
+)
+
+# 监控面板统计
+api_router.include_router(
+    stats.router,
+    prefix="/stats",
+    tags=["Stats"]
 )
 
 api_router.include_router(

@@ -41,6 +41,7 @@ class _PlatformEntry:
     api_key: str | None
     cfg: WeComPlatformConfig
     platform_type: str  # "wecom" (KF) or "wecom_bot"
+    config: dict | None = None  # 原始 config JSONB (触发配置等)
 
 
 # 企微 msg_type 字符串 -> TGO MessageType 整数 (1=text, 2=image, 3=file, 4=voice, 5=video)
@@ -55,9 +56,47 @@ def _to_msg_type_int(raw) -> int:
     return _WECOM_MSG_TYPE_MAP.get(str(raw or "").lower(), 1)
 
 
-def _is_question_text(text: str) -> bool:
-    """问句判定: 含中英文问号。"""
-    return ("？" in text) or ("?" in text)
+def _should_trigger(source_type: str, rec, trigger_cfg: dict | None) -> tuple[bool, str]:
+    """消息是否触发 AI 回答. 返回 (是否触发, 原因)。
+
+    触发配置 (platform.config.trigger):
+      mode: hybrid(默认, @必回+高分自动回) / mention(仅@回) / auto(纯评分) / disabled(关闭)
+      score_threshold: 评分阈值 (默认 60)
+      llm_prefilter: 模糊区是否走 LLM 预判 (默认 false)
+      ignore_members: 忽略成员名单 (发送者名命中不触发)
+    """
+    if source_type not in ("wecom_reader", "worktool"):
+        return True, "other_platform"
+    try:
+        raw = rec.raw_payload or {}
+    except Exception:
+        raw = {}
+    tc = trigger_cfg or {}
+    mode = str(tc.get("mode") or "hybrid").lower()
+    threshold = int(tc.get("score_threshold") or 60)
+    score = int(raw.get("score") or 0)
+    is_mention = bool(raw.get("is_mention"))
+    sender_name = str(raw.get("sender_name") or "")
+
+    # 忽略成员名单
+    ignored = [str(x).strip() for x in (tc.get("ignore_members") or []) if str(x).strip()]
+    if ignored and sender_name and sender_name in ignored:
+        return False, "ignored_member"
+
+    if is_mention:
+        return True, "mention"
+    if mode == "mention":
+        return False, "mention_only"
+    if mode == "disabled":
+        return False, "disabled"
+    if score >= threshold:
+        return True, f"score:{score}"
+    if score < 30:
+        return False, f"score:{score}"
+    # 模糊区 (30 <= score < threshold): llm_prefilter 开启时交给 LLM 预判 (后续实现)
+    if tc.get("llm_prefilter"):
+        return True, f"llm_prefilter:{score}"
+    return False, f"score:{score}"
 
 
 class WeComChannelListener:
@@ -118,6 +157,7 @@ class WeComChannelListener:
                     api_key=api_key,
                     cfg=cfg,
                     platform_type=platform_type or "wecom",
+                    config=cfg_dict or {},
                 ))
             except Exception as e:
                 print(f"[WECOM] Skip platform {pid}: invalid config: {e}")
@@ -466,8 +506,10 @@ class WeComChannelListener:
                 source_type = getattr(rec, "source_type", None) or p.platform_type or ""
 
                 try:
-                    # 全量转发模式下, 非问句消息不调 AI (省 token), 直接完成
-                    if source_type == "wecom_reader" and rec.content and not _is_question_text(rec.content):
+                    # 智能触发判定 (hybrid/@必回/评分阈值), 不触发则完成入库但不调 AI
+                    trigger_on, trigger_reason = _should_trigger(
+                        source_type, rec, (p.config or {}).get("trigger"))
+                    if not trigger_on:
                         await self._finalize_success(db, rec, None)
                         continue
 

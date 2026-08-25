@@ -68,6 +68,13 @@ DEFAULT_PERMISSIONS: List[Tuple[str, str, str]] = [
     ("tags", "delete", "Delete tags"),
     ("tags", "list", "List all tags"),
     
+    # Ticket permissions (工单系统)
+    ("tickets", "create", "Create tickets"),
+    ("tickets", "read", "View ticket details"),
+    ("tickets", "update", "Update tickets"),
+    ("tickets", "delete", "Delete tickets"),
+    ("tickets", "list", "List all tickets"),
+    
     # Platforms permissions
     ("platforms", "create", "Create platforms"),
     ("platforms", "read", "View platform details"),
@@ -116,6 +123,13 @@ DEFAULT_USER_GLOBAL_PERMISSIONS: List[Tuple[str, str]] = [
     ("tags", "update"),
     ("tags", "delete"),
     ("tags", "list"),
+    
+    # Users have full ticket access (工单系统)
+    ("tickets", "create"),
+    ("tickets", "read"),
+    ("tickets", "update"),
+    ("tickets", "delete"),
+    ("tickets", "list"),
     
     # Users can view platforms but not manage
     ("platforms", "read"),

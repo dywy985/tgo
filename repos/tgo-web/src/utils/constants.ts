@@ -10,6 +10,12 @@ export const NAVIGATION_ITEMS: NavigationItem[] = [
     path: '/chat'
   },
   {
+    id: 'dashboard',
+    title: 'navigation.dashboard',
+    icon: 'ChartBar',
+    path: '/dashboard'
+  },
+  {
     id: 'ai',
     title: 'navigation.ai',
     icon: 'Sparkles',
@@ -20,6 +26,12 @@ export const NAVIGATION_ITEMS: NavigationItem[] = [
     title: 'navigation.visitors',
     icon: 'Users',
     path: '/visitors'
+  },
+  {
+    id: 'tickets',
+    title: 'navigation.tickets',
+    icon: 'Ticket',
+    path: '/tickets'
   },
   {
     id: 'knowledge',

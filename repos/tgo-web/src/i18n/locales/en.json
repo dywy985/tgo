@@ -1070,6 +1070,7 @@
   },
   "navigation": {
     "chat": "Chat",
+    "dashboard": "Dashboard",
     "ai": "AI Assistant",
     "aiFeatures": "AI Features",
     "agents": "Agent Teams",
@@ -1078,10 +1079,14 @@
     "workflows": "Workflows",
     "skills": "Skills",
     "visitors": "Visitors",
+    "tickets": "Tickets",
     "knowledge": "Knowledge Base",
     "channels": "Platform Management",
     "settings": "Settings",
     "store": "App Store"
+  },
+  "dashboard": {
+    "title": "Dashboard"
   },
   "workflow": {
     "title": "Workflows",

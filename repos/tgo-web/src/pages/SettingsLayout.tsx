@@ -16,6 +16,7 @@ const SettingsLayout: React.FC = () => {
     { id: 'providers', label: t('settings.menu.providers', '模型提供商') },
     { id: 'plugins', label: t('settings.menu.plugins', '插件管理') },
     { id: 'wecom-debug', label: '企微调试' },
+    { id: 'tickets', label: t('settings.menu.tickets', '工单设置') },
   ];
 
   const iconMap: Record<string, React.ReactNode> = {
@@ -26,6 +27,7 @@ const SettingsLayout: React.FC = () => {
     providers: <FiCpu className="w-4 h-4" />,
     plugins: <Puzzle className="w-4 h-4" />,
     'wecom-debug': <FiMessageSquare className="w-4 h-4" />,
+    tickets: <FiMessageSquare className="w-4 h-4" />,
   };
 
   return (

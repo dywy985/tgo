@@ -3,7 +3,11 @@ import RootLayout from '../components/layout/RootLayout';
 import Layout from '../components/layout/Layout';
 import ProtectedRoute from '../components/auth/ProtectedRoute';
 import ChatPage from '../pages/ChatPage';
+import DashboardPage from '../pages/DashboardPage';
 import VisitorManagement from '../pages/VisitorManagement';
+import TicketsPage from '../pages/TicketsPage';
+import TicketDetailPage from '../pages/TicketDetailPage';
+import TicketSettingsPage from '../pages/TicketSettingsPage';
 import AIInterface from '../pages/AIInterface';
 import AgentManagement from '../components/ai/AgentManagement';
 import Tools from '../components/ai/Tools';
@@ -100,6 +104,7 @@ export const router = createBrowserRouter([
           { path: 'providers', element: <ModelProvidersSettings /> },
           { path: 'plugins', element: <PluginsSettings /> },
           { path: 'wecom-debug', element: <WecomDebugPanel /> },
+          { path: 'tickets', element: <TicketSettingsPage /> },
           { path: 'about', element: <AboutSettings /> },
           // Inject SaaS settings routes
           ...(saasRoutes || [])
@@ -119,8 +124,20 @@ export const router = createBrowserRouter([
         ]
       },
       {
+        path: 'dashboard',
+        element: <DashboardPage />
+      },
+      {
         path: 'visitors',
         element: <VisitorManagement />
+      },
+      {
+        path: 'tickets',
+        element: <TicketsPage />
+      },
+      {
+        path: 'tickets/:id',
+        element: <TicketDetailPage />
       },
       {
         path: 'ai',

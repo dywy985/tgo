@@ -18,6 +18,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+import json
 
 from app.core.config import settings
 from app.core.database import get_db
@@ -85,6 +86,57 @@ async def wecom_messages(
     ).mappings().all()
     msgs = [dict(r) for r in reversed(rows)]
     return {"count": len(msgs), "messages": msgs}
+
+
+DEFAULT_TRIGGER = {
+    "mode": "hybrid",
+    "score_threshold": 60,
+    "llm_prefilter": False,
+    "ignore_members": [],
+}
+
+
+@router.get("/wecom/trigger")
+async def wecom_trigger_get(
+    db: Session = Depends(get_db),
+    current_user: Staff = Depends(get_current_active_user),
+) -> dict:
+    """读企微通道触发配置 (存于 pt_platforms.config.trigger)。"""
+    row = db.execute(
+        text("SELECT config FROM pt_platforms WHERE type = 'wecom_reader' AND is_active = true ORDER BY created_at LIMIT 1")
+    ).mappings().first()
+    cfg = dict(row["config"] or {}) if row else {}
+    trigger = dict(cfg.get("trigger") or {})
+    merged = {**DEFAULT_TRIGGER, **trigger}
+    return {"trigger": merged}
+
+
+@router.put("/wecom/trigger")
+async def wecom_trigger_put(
+    payload: dict[str, Any],
+    db: Session = Depends(get_db),
+    current_user: Staff = Depends(get_current_active_user),
+) -> dict:
+    """写企微通道触发配置 (更新 pt_platforms + api_platforms 双表 config.trigger)。"""
+    trigger = {**DEFAULT_TRIGGER, **payload.get("trigger", {})}
+    # 校验字段
+    if trigger["mode"] not in ("hybrid", "mention", "auto", "disabled"):
+        raise HTTPException(status_code=400, detail="mode 必须是 hybrid/mention/auto/disabled")
+    try:
+        trigger["score_threshold"] = max(1, min(int(trigger["score_threshold"]), 100))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="score_threshold 必须是 1-100 整数")
+    trigger["llm_prefilter"] = bool(trigger["llm_prefilter"])
+    trigger["ignore_members"] = [str(x).strip() for x in trigger.get("ignore_members", []) if str(x).strip()]
+
+    # 双表更新: pt_platforms (tgo-platform 消费) + api_platforms (后台展示)
+    for table in ("pt_platforms", "api_platforms"):
+        db.execute(
+            text(f"UPDATE {table} SET config = jsonb_set(COALESCE(config, '{{}}'::jsonb), '{{trigger}}', :trigger::jsonb) WHERE type = 'wecom_reader' AND is_active = true"),
+            {"trigger": json.dumps(trigger, ensure_ascii=False)},
+        )
+    db.commit()
+    return {"ok": True, "trigger": trigger}
 
 
 async def _proxy_send(base_url: str, payload: dict) -> dict:

@@ -1397,6 +1397,7 @@
   },
   "navigation": {
     "chat": "对话",
+    "dashboard": "监控面板",
     "ai": "AI助手",
     "aiFeatures": "AI 功能",
     "agents": "AI员工团队",
@@ -1405,10 +1406,14 @@
     "workflows": "工作流",
     "skills": "技能",
     "visitors": "访客管理",
+    "tickets": "工单管理",
     "knowledge": "知识库",
     "channels": "渠道管理",
     "settings": "设置",
     "store": "应用市场"
+  },
+  "dashboard": {
+    "title": "监控面板"
   },
   "workflow": {
     "title": "工作流",
