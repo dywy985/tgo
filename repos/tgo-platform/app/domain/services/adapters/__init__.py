@@ -4,6 +4,8 @@ from .base import BasePlatformAdapter, SimpleStdoutAdapter
 from .email import EmailAdapter
 from .wecom import WeComAdapter
 from .wecom_bot import WeComBotAdapter
+from .wecom_reader import WeComReaderAdapter
+from .worktool import WorkToolAdapter
 from .feishu_bot import FeishuBotAdapter
 from .dingtalk_bot import DingTalkBotAdapter
 from .telegram import TelegramAdapter

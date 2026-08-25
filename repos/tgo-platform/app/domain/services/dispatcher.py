@@ -8,7 +8,7 @@ from app.core.config import settings
 from app.db.models import Platform
 from app.domain.entities import NormalizedMessage, ChatCompletionRequest
 from app.domain.ports import TgoApiClient, SSEManager, PlatformAdapter
-from app.domain.services.adapters import SimpleStdoutAdapter, EmailAdapter, WeComAdapter, WeComBotAdapter, FeishuBotAdapter, DingTalkBotAdapter, TelegramAdapter, SlackAdapter
+from app.domain.services.adapters import SimpleStdoutAdapter, EmailAdapter, WeComAdapter, WeComBotAdapter, WeComReaderAdapter, WorkToolAdapter, FeishuBotAdapter, DingTalkBotAdapter, TelegramAdapter, SlackAdapter
 
 
 def _expected_output_for(ptype: str) -> str | None:
@@ -17,6 +17,10 @@ def _expected_output_for(ptype: str) -> str | None:
         return "text"
     if p == "wecom_bot":
         return "text"  # WeCom Bot supports text and markdown, default to text
+    if p == "wecom_reader":
+        return "text"  # 本地监控桥 (aibot 长连接), text/markdown 均可
+    if p == "worktool":
+        return "text"  # WorkTool 通道 (手机执行), 文本
     if p == "feishu_bot":
         return "text"  # Feishu Bot uses text for reply
     if p == "dingtalk_bot":
@@ -110,6 +114,39 @@ async def select_adapter_for_target(msg: NormalizedMessage, platform: Platform) 
         if not response_url:
             return SimpleStdoutAdapter()
         return WeComBotAdapter(response_url=response_url)
+    if ptype == "wecom_reader":
+        # 本地监控桥: 回复经桥接发送服务 (aibot 长连接) 推送到群
+        cfg = platform.config or {}
+        send_base_url = cfg.get("send_base_url") or ""
+        send_token = cfg.get("send_token") or ""
+        # chatid 从消息上下文取 (wr_xxx 推送目标)
+        rc = ((msg.extra or {}).get("wecom_reader") or {})
+        chatid = rc.get("chatid") or ""
+        if not send_base_url:
+            logging.warning("[WECOM_READER] platform %s 未配置 send_base_url, 回复丢弃", platform.id)
+            return SimpleStdoutAdapter()
+        return WeComReaderAdapter(
+            send_base_url=send_base_url,
+            chatid=chatid,
+            send_token=send_token,
+        )
+    if ptype == "worktool":
+        # WorkTool 通道: 回复经网关 (手机执行) 发送, 目标按群名匹配
+        cfg = platform.config or {}
+        gateway_url = cfg.get("gateway_url") or ""
+        robot_id = cfg.get("robot_id") or ""
+        api_key = cfg.get("api_key") or ""
+        rc = ((msg.extra or {}).get("wecom_reader") or {})
+        chatid = rc.get("chatid") or ""  # 群名
+        if not (gateway_url and robot_id):
+            logging.warning("[WORKTOOL] platform %s 未配置 gateway_url/robot_id, 回复丢弃", platform.id)
+            return SimpleStdoutAdapter()
+        return WorkToolAdapter(
+            gateway_url=gateway_url,
+            robot_id=robot_id,
+            chatid=chatid,
+            api_key=api_key,
+        )
     if ptype == "feishu_bot":
         cfg = platform.config or {}
         # Get feishu context which contains message_id for reply
@@ -218,14 +255,15 @@ async def process_message(
                     # Debug: print all event types and data
                     # print(f"[DISPATCH DEBUG] event={ev.event} type={et} payload={payload}")
                     
-                    if et in {"team_run_content", "agent_run_content", "workflow_content", "workflow_run_content"}:
+                    if et in {"team_run_content", "agent_run_content", "workflow_content", "workflow_run_content",
+                              "agent_content_chunk"}:
                         data = payload.get("data", {})
                         # Try flat content first, then nested data.content (level 3)
-                        text = data.get("content") or data.get("text")
+                        text = data.get("content") or data.get("text") or data.get("content_chunk")
                         if not text and isinstance(data, dict):
                             inner_data = data.get("data", {})
                             if isinstance(inner_data, dict):
-                                text = inner_data.get("content") or inner_data.get("text")
+                                text = inner_data.get("content") or inner_data.get("text") or inner_data.get("content_chunk")
                         
                         if text:
                             chunks.append(text)
@@ -237,6 +275,14 @@ async def process_message(
                         
                         if text:
                             chunks.append(text)
+                    
+                    # agent_response_complete 携带最终完整内容, 直接采用 (覆盖拼接结果)
+                    if et == "agent_response_complete":
+                        data = payload.get("data", {})
+                        final_text = data.get("final_content") or ""
+                        if final_text:
+                            chunks = [final_text]
+                        break
                     
                     if et in {"workflow_completed", "team_run_completed", "workflow_failed", "agent_run_completed"}:
                         break

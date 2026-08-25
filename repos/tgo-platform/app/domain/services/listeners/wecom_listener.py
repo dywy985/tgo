@@ -43,6 +43,18 @@ class _PlatformEntry:
     platform_type: str  # "wecom" (KF) or "wecom_bot"
 
 
+# 企微 msg_type 字符串 -> TGO MessageType 整数 (1=text, 2=image, 3=file, 4=voice, 5=video)
+_WECOM_MSG_TYPE_MAP = {
+    "text": 1, "image": 2, "file": 3, "voice": 4, "video": 5,
+}
+
+
+def _to_msg_type_int(raw) -> int:
+    if isinstance(raw, int):
+        return raw
+    return _WECOM_MSG_TYPE_MAP.get(str(raw or "").lower(), 1)
+
+
 class WeComChannelListener:
     """WeCom consumer that processes pending wecom_inbox rows asynchronously.
 
@@ -83,12 +95,12 @@ class WeComChannelListener:
                 pass
 
     async def _load_active_wecom_platforms(self) -> list[_PlatformEntry]:
-        """Load all active WeCom platforms (both wecom_kf and wecom_bot types)."""
+        """Load all active WeCom platforms (wecom_kf / wecom_bot / wecom_reader / worktool types)."""
         async with self._session_factory() as session:
             rows = (
                 await session.execute(
                     select(Platform.id, Platform.project_id, Platform.api_key, Platform.config, Platform.type)
-                    .where(Platform.is_active.is_(True), Platform.type.in_(["wecom", "wecom_bot"]))
+                    .where(Platform.is_active.is_(True), Platform.type.in_(["wecom", "wecom_bot", "wecom_reader", "worktool"]))
                 )
             ).all()
         platforms: list[_PlatformEntry] = []
@@ -214,6 +226,16 @@ class WeComChannelListener:
                 wecom_ctx["external_userid"] = self._extract_external_user_id(record)
             except Exception:
                 pass
+        elif source_type == "wecom_reader":
+            # 本地监控桥 specific context: chatid (aibot 推送目标) + 群名/发送人
+            try:
+                raw_payload = record.raw_payload or {}
+                wecom_ctx["chat_id"] = raw_payload.get("chat_id") or record.open_kfid or ""
+                wecom_ctx["conv_name"] = raw_payload.get("conv_name") or ""
+                wecom_ctx["sender_name"] = raw_payload.get("sender_name") or ""
+                wecom_ctx["sender_id"] = raw_payload.get("sender_id")
+            except Exception:
+                pass
         else:
             # WeCom Bot specific context
             try:
@@ -231,13 +253,18 @@ class WeComChannelListener:
             "from_uid": record.from_user,
             "content": record.content or "",
             "platform_api_key": platform.api_key or "",
-            "platform_type": platform.platform_type,  # "wecom" or "wecom_bot"
+            "platform_type": platform.platform_type,  # "wecom", "wecom_bot" or "wecom_reader"
             "platform_id": str(platform.id),
             "extra": {
                 "project_id": str(platform.project_id),
-                "msg_type": record.msg_type,
-                "source_type": source_type,  # "wecom_kf" or "wecom_bot"
+                "msg_type": _to_msg_type_int(record.msg_type),
+                "source_type": source_type,  # "wecom_kf", "wecom_bot" or "wecom_reader"
                 "wecom": wecom_ctx,
+                "wecom_reader": {
+                    "chatid": wecom_ctx.get("chat_id") or "",
+                    "conv_name": wecom_ctx.get("conv_name") or "",
+                    "sender_name": wecom_ctx.get("sender_name") or "",
+                },
             },
         }
 
@@ -393,6 +420,13 @@ class WeComChannelListener:
                     display_name = from_info.get("name") or from_info.get("alias") or from_info.get("userid")
             except Exception:
                 pass
+        elif source_type == "wecom_reader":
+            # 本地监控桥: 访客昵称用群名 (按群聚合), 无则退回会话 ID
+            try:
+                raw_payload = record.raw_payload or {}
+                display_name = raw_payload.get("conv_name") or record.from_user
+            except Exception:
+                display_name = record.from_user
 
         if platform.api_key:
             try:

@@ -15,14 +15,20 @@ def _json_or_text(s: str):
 
 class DefaultSSEManager(SSEManager):
     async def stream_events(self, frames: AsyncIterator[bytes]) -> AsyncIterator[StreamEvent]:
+        """SSE 按行解析。
+
+        frames 来自 HttpxTgoApiClient.chat_completion 的 r.aiter_lines(),
+        已是按行分割 (每行不含换行符): 'event: xxx' / 'data: {...}' / 空行。
+        """
         buffer_event: str | None = None
         async for b in frames:
-            line = b.decode("utf-8")
+            line = b.decode("utf-8", errors="replace").rstrip("\r")
+            if not line:
+                continue  # SSE 事件分隔空行
             if line.startswith("event:"):
-                buffer_event = line.split(":", 1)[1].strip()
+                buffer_event = line[len("event:"):].strip()
             elif line.startswith("data:"):
-                payload_raw = line.split(":", 1)[1].strip()
-                payload = _json_or_text(payload_raw)
+                payload = _json_or_text(line[len("data:"):].strip())
                 yield StreamEvent(event=buffer_event or "event", payload=payload)
                 buffer_event = None
 
@@ -34,12 +40,17 @@ class DefaultSSEManager(SSEManager):
             else:
                 payload = ev.payload or {}
                 et = payload.get("event_type")
-                if et in {"team_run_content"}:
+                if et in {"team_run_content", "agent_content_chunk"}:
                     data = payload.get("data", {})
-                    text = data.get("content")
+                    text = data.get("content") or data.get("content_chunk")
                     if text:
                         chunks.append(text)
+                if et == "agent_response_complete":
+                    data = payload.get("data", {})
+                    final_text = data.get("final_content") or ""
+                    if final_text:
+                        chunks = [final_text]
+                    break
                 if et in {"workflow_completed", "team_run_completed", "workflow_failed"}:
                     break
         return {"text": "".join(chunks)}
-

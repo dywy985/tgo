@@ -1077,6 +1077,114 @@ async def _handle_telegram_webhook(
     return {"ok": True}
 
 
+async def _handle_wecom_reader_webhook(
+    platform: Platform,
+    request: Request,
+    db: AsyncSession,
+) -> dict[str, Any] | Response:
+    """Handle wecom_reader bridge callback (本地企微监控桥接器).
+
+    JSON format (plain, no WeCom encryption — the bridge is our own service):
+    {
+      "message_id": "12345",              # 本地 sequence, 用于幂等去重
+      "from_uid": "R:83785736147799",     # 本地会话 ID (群=R:, 单聊=S:)
+      "content": "客户问题",
+      "conv_name": "XX客户群",             # 会话名 (群名)
+      "sender_name": "张三",               # 发送人昵称
+      "sender_id": 123456,                # 发送人 ID (可选)
+      "chatid": "wrT0WARQAAHaVhGOZBnxjqN2uh6dS1Cw",  # aibot 推送目标 (可选)
+      "msg_type": "text",
+      "is_from_colleague": false          # 客服本人/机器人消息为 true
+    }
+
+    Auth: path api_key + optional X-Callback-Token matching platform.config.token.
+    Stores into WeComInbox with source_type="wecom_reader".
+    """
+    config = platform.config or {}
+    callback_token = (config.get("token") or "").strip()
+    header_token = request.headers.get("X-Callback-Token") or ""
+    if callback_token and header_token != callback_token:
+        return error_response(
+            status.HTTP_403_FORBIDDEN,
+            code="CALLBACK_TOKEN_MISMATCH",
+            message="Callback token verification failed",
+            request_id=get_request_id(request),
+        )
+
+    raw_body = await request.body()
+    body_text = raw_body.decode("utf-8") if raw_body else ""
+    try:
+        payload = json.loads(body_text)
+    except Exception as e:
+        logging.error("[WECOM_READER] Invalid JSON: %s, body=%s", e, body_text[:300])
+        return error_response(
+            status.HTTP_400_BAD_REQUEST,
+            code="INVALID_PAYLOAD",
+            message="Invalid JSON payload",
+            request_id=get_request_id(request),
+        )
+
+    from_uid = str(payload.get("from_uid") or "").strip()
+    content = str(payload.get("content") or "")
+    message_id = str(payload.get("message_id") or "")
+    conv_name = str(payload.get("conv_name") or "").strip()
+    sender_name = str(payload.get("sender_name") or "").strip()
+    chatid = str(payload.get("chatid") or "").strip()
+    msg_type = str(payload.get("msg_type") or "text").lower()
+    is_from_colleague = bool(payload.get("is_from_colleague", False))
+
+    if not from_uid or not content:
+        logging.warning("[WECOM_READER] Missing from_uid/content: %s", payload)
+        return {"ok": True}
+
+    received_at = None
+    try:
+        create_time = payload.get("create_time") or 0
+        if int(create_time) > 0:
+            received_at = datetime.fromtimestamp(int(create_time), tz=timezone.utc)
+    except Exception:
+        received_at = None
+
+    raw_payload = {
+        "raw_json": body_text,
+        "parsed": payload,
+        "platform_type": "wecom_reader",
+        "chat_id": chatid or None,
+        "conv_name": conv_name,
+        "sender_name": sender_name,
+        "sender_id": payload.get("sender_id"),
+    }
+
+    try:
+        source_type = "wecom_reader" if (platform.type or "").lower() == "wecom_reader" else "worktool"
+        inbox_record = WeComInbox(
+            platform_id=platform.id,
+            message_id=message_id or str(uuid.uuid4()),
+            source_type=source_type,
+            from_user=from_uid,
+            open_kfid=chatid or None,
+            msg_type=msg_type,
+            content=content,
+            is_from_colleague=is_from_colleague,
+            raw_payload=raw_payload,
+            status="pending",
+            received_at=received_at,
+        )
+        db.add(inbox_record)
+        await db.commit()
+        logging.info("[WECOM_READER] Stored message: from=%s, len=%d, platform=%s",
+                     from_uid, len(content), platform.id)
+    except IntegrityError as e:
+        logging.info("[WECOM_READER] Duplicate message detected for %s: %s", platform.id, e)
+        await db.rollback()
+    except Exception as e:
+        logging.error("[WECOM_READER] Store failed for %s: %s", platform.id, e)
+        await db.rollback()
+        return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    return {"ok": True}
+
+
 @router.post("/v1/platforms/callback/{platform_api_key}", responses={400: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}, 501: {"model": ErrorResponse}})
 async def platforms_callback(platform_api_key: str, request: Request, db: AsyncSession = Depends(get_db)):
     """Unified platform callback endpoint for WeCom and WuKongIM.
@@ -1101,6 +1209,11 @@ async def platforms_callback(platform_api_key: str, request: Request, db: AsyncS
         return await _handle_wecom_webhook(platform=platform, request=request, db=db)
     if platform_type == "wecom_bot":
         return await _handle_wecom_bot_webhook(platform=platform, request=request, db=db)
+    if platform_type == "wecom_reader":
+        return await _handle_wecom_reader_webhook(platform=platform, request=request, db=db)
+    if platform_type == "worktool":
+        # WorkTool 上行消息与 wecom_reader 同为自研 JSON 桥接格式, 复用同一 handler
+        return await _handle_wecom_reader_webhook(platform=platform, request=request, db=db)
     if platform_type == "feishu_bot":
         return await _handle_feishu_bot_webhook(platform=platform, request=request, db=db)
     if platform_type == "dingtalk_bot":
