@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from 'react';
-import { useTranslation } from 'react-i18next';
 import { Smartphone } from 'lucide-react';
 import { apiClient } from '@/services/api';
 
@@ -13,7 +12,6 @@ interface WorkToolConfig {
  * 存于平台 config.robot_id / config.gateway_url
  */
 const WorkToolPlatformConfig: React.FC = () => {
-  const { t } = useTranslation();
   const [cfg, setCfg] = useState<WorkToolConfig>({ robot_id: '', gateway_url: '' });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);

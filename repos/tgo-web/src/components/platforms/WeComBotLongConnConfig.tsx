@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from 'react';
-import { useTranslation } from 'react-i18next';
 import { Bot, Plus, Trash2 } from 'lucide-react';
 import { apiClient } from '@/services/api';
 
@@ -18,7 +17,6 @@ interface AibotConfig {
  * 配置经 tgo-api 代理到 Windows 侧发送服务（aibot_send_service），热重连生效。
  */
 const WeComBotLongConnConfig: React.FC = () => {
-  const { t } = useTranslation();
   const [cfg, setCfg] = useState<AibotConfig>({
     bot_id: '', secret_set: false, secret: '', bot_name: '', default_chatid: '', conv_map: {},
   });
@@ -67,7 +65,7 @@ const WeComBotLongConnConfig: React.FC = () => {
           conv_map: cfg.conv_map,
         },
       };
-      if (cfg.secret.trim()) payload.aibot.secret = cfg.secret.trim();
+      if (cfg.secret?.trim()) payload.aibot.secret = cfg.secret.trim();
       await apiClient.put('/v1/debug/wecom/aibot-config', payload);
       setCfg({ ...cfg, secret: '' });
       setSaved(true);
