@@ -132,7 +132,7 @@ async def wecom_trigger_put(
     # 双表更新: pt_platforms (tgo-platform 消费) + api_platforms (后台展示)
     for table in ("pt_platforms", "api_platforms"):
         db.execute(
-            text(f"UPDATE {table} SET config = jsonb_set(COALESCE(config, '{{}}'::jsonb), '{{trigger}}', :trigger::jsonb) WHERE type = 'wecom_reader' AND is_active = true"),
+            text(f"UPDATE {table} SET config = jsonb_set(COALESCE(config, '{{}}'::jsonb), '{{trigger}}', CAST(:trigger AS jsonb)) WHERE type = 'wecom_reader' AND is_active = true"),
             {"trigger": json.dumps(trigger, ensure_ascii=False)},
         )
     db.commit()
