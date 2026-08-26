@@ -96,6 +96,78 @@ DEFAULT_TRIGGER = {
 }
 
 
+# ---------- aibot 长连接配置 (代理到 Windows 侧发送服务) ----------
+
+async def _aibot_http(method: str, path: str, payload: dict | None = None):
+    async with httpx.AsyncClient(timeout=30) as client:
+        if method == "GET":
+            resp = await client.get(AIBOT_SENDER + path)
+        else:
+            resp = await client.post(AIBOT_SENDER + path, json=payload)
+        try:
+            return resp.json(), resp.status_code
+        except Exception:
+            return {"ok": False, "error": "bridge 返回非 JSON"}, resp.status_code
+
+
+@router.get("/wecom/aibot-config")
+async def wecom_aibot_config_get(
+    current_user: Staff = Depends(get_current_active_user),
+) -> dict:
+    data, code = await _aibot_http("GET", "/api/config")
+    if code >= 400:
+        raise HTTPException(status_code=code, detail=data.get("error") or data)
+    return data
+
+
+@router.put("/wecom/aibot-config")
+async def wecom_aibot_config_put(
+    payload: dict[str, Any],
+    current_user: Staff = Depends(get_current_active_user),
+) -> dict:
+    data, code = await _aibot_http("POST", "/api/config", payload)
+    if code >= 400:
+        raise HTTPException(status_code=code, detail=data.get("error") or data)
+    return data
+
+
+# ---------- worktool 通道配置 (存平台 config) ----------
+
+@router.get("/wecom/worktool-config")
+async def wecom_worktool_config_get(
+    db: Session = Depends(get_db),
+    current_user: Staff = Depends(get_current_active_user),
+) -> dict:
+    row = db.execute(
+        text("SELECT config FROM pt_platforms WHERE type = 'worktool' AND is_active = true ORDER BY created_at LIMIT 1")
+    ).mappings().first()
+    cfg = dict(row["config"] or {}) if row else {}
+    return {"worktool": {
+        "robot_id": cfg.get("robot_id") or "",
+        "gateway_url": cfg.get("gateway_url") or "",
+    }}
+
+
+@router.put("/wecom/worktool-config")
+async def wecom_worktool_config_put(
+    payload: dict[str, Any],
+    db: Session = Depends(get_db),
+    current_user: Staff = Depends(get_current_active_user),
+) -> dict:
+    wt = payload.get("worktool", payload)
+    robot_id = str(wt.get("robot_id") or "").strip()
+    gateway_url = str(wt.get("gateway_url") or "").strip()
+    if not robot_id:
+        raise HTTPException(status_code=400, detail="robot_id 不能为空")
+    for table in ("pt_platforms", "api_platforms"):
+        db.execute(
+            text(f"UPDATE {table} SET config = jsonb_set(jsonb_set(COALESCE(config, '{{}}'::jsonb), '{{robot_id}}', to_jsonb(:rid::text)), '{{gateway_url}}', to_jsonb(:gurl::text)) WHERE type = 'worktool' AND is_active = true"),
+            {"rid": robot_id, "gurl": gateway_url},
+        )
+    db.commit()
+    return {"ok": True, "worktool": {"robot_id": robot_id, "gateway_url": gateway_url}}
+
+
 @router.get("/wecom/trigger")
 async def wecom_trigger_get(
     db: Session = Depends(get_db),

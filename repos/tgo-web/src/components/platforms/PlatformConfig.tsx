@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Webhook, Copy, Eye, EyeOff, RefreshCw, Settings, Pencil } from 'lucide-react';
 import PlatformAISettings from '@/components/platforms/PlatformAISettings';
+import WorkToolPlatformConfig from '@/components/platforms/WorkToolPlatformConfig';
+import WeComBotLongConnConfig from '@/components/platforms/WeComBotLongConnConfig';
 import type { Platform, PlatformConfig as PlatformConfigType, PlatformAIMode } from '@/types';
 import { usePlatformStore } from '@/stores/platformStore';
 import { useToast } from '@/hooks/useToast';
@@ -385,7 +387,15 @@ const PlatformConfig: React.FC<PlatformConfigProps> = ({ platform, onUpdate, onT
           </>
         )}
 
-        {platform.type !== 'custom' && (
+        {platform.type === 'worktool' && (
+          <WorkToolPlatformConfig />
+        )}
+
+        {platform.type === 'wecom_bot' && (
+          <WeComBotLongConnConfig />
+        )}
+
+        {platform.type !== 'custom' && platform.type !== 'worktool' && platform.type !== 'wecom_bot' && (
           <div className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-md p-5 rounded-lg shadow-sm border border-gray-200/60 dark:border-gray-700/60 w-full">
             <h3 className="text-md font-semibold text-gray-700 dark:text-gray-200 mb-4">
               {t('platforms.config.generic.title', '平台配置')}
