@@ -39,6 +39,7 @@ export function toPlatformType(input: string | null | undefined): PlatformType {
     case PlatformType.CUSTOM: return PlatformType.CUSTOM;
     case PlatformType.WECOM: return PlatformType.WECOM;
     case PlatformType.WECOM_BOT: return PlatformType.WECOM_BOT;
+    case PlatformType.WECOM_BOT_API: return PlatformType.WECOM_BOT_API;
     case PlatformType.FEISHU_BOT: return PlatformType.FEISHU_BOT;
     case PlatformType.DINGTALK_BOT: return PlatformType.DINGTALK_BOT;
     default: return PlatformType.WEBSITE;
@@ -53,6 +54,7 @@ export function getPlatformIconComponent(platformType: PlatformType): IconCompon
     case PlatformType.WECHAT: return IoLogoWechat;
     case PlatformType.WECOM: return AiOutlineWechatWork;
     case PlatformType.WECOM_BOT: return FaRobot;
+    case PlatformType.WECOM_BOT_API: return FaRobot;
     case PlatformType.FEISHU_BOT: return FaRobot;
     case PlatformType.DINGTALK_BOT: return AiFillDingtalkCircle;
     case PlatformType.WEBSITE: return TbWorld;

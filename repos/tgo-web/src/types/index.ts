@@ -67,6 +67,7 @@ export enum PlatformType {
   CUSTOM = "custom",
   WECOM = "wecom",
   WECOM_BOT = "wecom_bot",
+  WECOM_BOT_API = "wecom_bot_api",
   FEISHU_BOT = "feishu_bot",
   DINGTALK_BOT = "dingtalk_bot"
 }

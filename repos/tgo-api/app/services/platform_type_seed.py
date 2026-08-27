@@ -48,6 +48,12 @@ SEED_PLATFORM_TYPES: List[Dict[str, object]] = [
         "is_supported": True,
     },
     {
+        "type": "wecom_bot_api",
+        "name": "企业微信机器人API模式",
+        "name_en": "WeCom Bot API",
+        "is_supported": True,
+    },
+    {
         "type": "feishu_bot",
         "name": "飞书机器人",
         "name_en": "Feishu Bot",

@@ -38,7 +38,8 @@ class PlatformType(str, Enum):
     TIKTOK = "tiktok"
     CUSTOM = "custom"
     WECOM = "wecom" # 企业微信
-    WECOM_BOT = "wecom_bot" # 企业微信机器人
+    WECOM_BOT = "wecom_bot" # 企业微信机器人（长连接）
+    WECOM_BOT_API = "wecom_bot_api" # 企业微信机器人API模式（Webhook 回调）
     WECOM_READER = "wecom_reader" # 本地企微监控桥 (v2.0 自研通道)
     WORKTOOL = "worktool" # WorkTool 手机通道 (v2.0 自研通道)
     FEISHU_BOT = "feishu_bot" # 飞书机器人
