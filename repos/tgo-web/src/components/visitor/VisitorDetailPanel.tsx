@@ -11,6 +11,8 @@ import ImageCropModal from '../ui/ImageCropModal';
 import AIInsightsSection from './AIInsightsSection';
 import SystemInfoSection from './SystemInfoSection';
 import RecentActivitySection from './RecentActivitySection';
+import RelatedTicketsSection from './RelatedTicketsSection';
+import { ticketsApiService, type Ticket } from '@/services/ticketsApi';
 import PluginPanelSection from '../plugin/PluginPanelSection';
 import { visitorApiService, type VisitorAttributesUpdateRequest, type VisitorResponse } from '@/services/visitorApi';
 import { tagsApiService } from '@/services/tagsApi';
@@ -191,6 +193,19 @@ const VisitorDetailPanel: React.FC<VisitorDetailPanelProps> = ({
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [recentlyMovedId, setRecentlyMovedId] = useState<string | null>(null);
+  const [relatedTickets, setRelatedTickets] = useState<Ticket[]>([]);
+  
+  // H10: 拉取当前访客的相关工单（visitor_id 过滤）
+  useEffect(() => {
+    let cancelled = false;
+    if (!visitorId) return;
+    ticketsApiService.listTickets({ visitor_id: visitorId, limit: 5 }).then((resp) => {
+      if (!cancelled) setRelatedTickets(resp.data || []);
+    }).catch(() => {
+      if (!cancelled) setRelatedTickets([]);
+    });
+    return () => { cancelled = true; };
+  }, [visitorId]);
   
   // 板块展开收起状态
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>(() => {
@@ -202,7 +217,8 @@ const VisitorDetailPanel: React.FC<VisitorDetailPanelProps> = ({
         tags: true,
         system_info: false,
         plugins: true,
-        recent_activity: false
+        recent_activity: false,
+        related_tickets: false
       };
     } catch {
       return {
@@ -211,7 +227,8 @@ const VisitorDetailPanel: React.FC<VisitorDetailPanelProps> = ({
         tags: true,
         system_info: false,
         plugins: true,
-        recent_activity: false
+        recent_activity: false,
+        related_tickets: false
       };
     }
   });
@@ -232,7 +249,7 @@ const VisitorDetailPanel: React.FC<VisitorDetailPanelProps> = ({
   const avatarInputRef = useRef<HTMLInputElement>(null);
 
   // 默认模块顺序
-  const DEFAULT_ORDER = ['basic_info', 'ai_insights', 'tags', 'system_info', 'plugins', 'recent_activity'];
+  const DEFAULT_ORDER = ['basic_info', 'ai_insights', 'tags', 'system_info', 'plugins', 'recent_activity', 'related_tickets'];
   const [sectionOrder, setSectionOrder] = useState<string[]>(() => {
     try {
       const saved = localStorage.getItem('visitor_panel_section_order');
@@ -1182,6 +1199,24 @@ const VisitorDetailPanel: React.FC<VisitorDetailPanelProps> = ({
                   expanded={expandedSections.recent_activity}
                   onToggle={(expanded) => handleToggleSection('recent_activity', expanded)}
                   onDragStart={(e) => handleDragStart(e, 'recent_activity')}
+                  onDragEnd={handleDragEnd}
+                />
+              );
+            case 'related_tickets':
+              return wrapWithIndicator(
+                <RelatedTicketsSection
+                  tickets={relatedTickets.map((tk) => ({
+                    id: tk.id,
+                    number: tk.number,
+                    title: tk.title,
+                    status: tk.status === 'open' ? 'open' : tk.status === 'closed' ? 'closed' : 'pending',
+                    url: `/tickets/${tk.id}`,
+                  }))}
+                  draggable
+                  className={sectionClassName}
+                  expanded={expandedSections.related_tickets}
+                  onToggle={(expanded) => handleToggleSection('related_tickets', expanded)}
+                  onDragStart={(e) => handleDragStart(e, 'related_tickets')}
                   onDragEnd={handleDragEnd}
                 />
               );

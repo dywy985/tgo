@@ -239,6 +239,14 @@ def create_app(
             # best-effort; don't block startup
             pass
 
+        # Start periodic ticket auto-resolve task (H8, best-effort)
+        try:
+            from app.tasks.ticket_auto_resolve import start_ticket_auto_resolve_task
+            await start_ticket_auto_resolve_task()
+        except Exception:
+            # best-effort; don't block startup
+            pass
+
         # Run additional startup hooks
         if startup_hooks:
             for hook in startup_hooks:
@@ -302,6 +310,13 @@ def create_app(
         try:
             from app.tasks.auto_fallback_to_ai import stop_auto_fallback_to_ai_task
             await stop_auto_fallback_to_ai_task()
+        except Exception:
+            pass
+
+        # Stop periodic ticket auto-resolve task (H8, best-effort)
+        try:
+            from app.tasks.ticket_auto_resolve import stop_ticket_auto_resolve_task
+            await stop_ticket_auto_resolve_task()
         except Exception:
             pass
 

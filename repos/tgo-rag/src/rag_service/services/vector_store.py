@@ -9,10 +9,32 @@ from sqlalchemy.exc import ProgrammingError
 from langchain_postgres import PGEngine, PGVectorStore
 from langchain_core.documents import Document
 from langchain_postgres.v2.vectorstores import DistanceStrategy
-from langchain_postgres.v2.hybrid_search_config import (
-    HybridSearchConfig,
-    reciprocal_rank_fusion,
-)
+from langchain_postgres.v2.hybrid_search_config import HybridSearchConfig, reciprocal_rank_fusion
+
+
+def _safe_reciprocal_rank_fusion(
+    primary_search_results,
+    secondary_search_results,
+    **kwargs,
+):
+    """RRF fusion 容错 wrapper（H13: langchain-postgres 向量结果 distance 为 None 时崩溃）。
+
+    库的 reciprocal_rank_fusion 对 primary/secondary 结果按 item["distance"] 排序，
+    某些查询路径下向量结果缺 distance（None）→ TypeError。此处补默认距离 1.0
+    （cosine distance 范围 0~2，1.0 表示中等相似，仅作兜底排序）。
+    """
+    def _fix(items):
+        out = []
+        for item in items or []:
+            if item.get("distance") is None:
+                item = dict(item)  # RowMapping 不可变，复制为可变 dict
+                item["distance"] = 1.0
+            out.append(item)
+        return out
+
+    return reciprocal_rank_fusion(
+        _fix(primary_search_results), _fix(secondary_search_results), **kwargs
+    )
 from sqlalchemy import create_engine
 
 from ..config import get_settings
@@ -54,7 +76,7 @@ class VectorStoreService:
         return HybridSearchConfig(
             tsv_column=f"{CONTENT_COLUMN}_tsv",
             tsv_lang="pg_catalog.english",
-            fusion_function=reciprocal_rank_fusion,
+            fusion_function=_safe_reciprocal_rank_fusion,
             fusion_function_parameters={
                 "rrf_k": 60,
                 "fetch_top_k": 20,

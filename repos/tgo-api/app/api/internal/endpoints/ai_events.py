@@ -259,33 +259,34 @@ async def _handle_manual_service_request(event: AIServiceEvent, project: Project
         )
 
     # ============ H1: 转人工自动建单 (source=manual_service, status=pending_human) ============
-    try:
-        from app.services.ticket_service import create_ticket
+    if _ticket_policy_enabled(db, project.id, "create_ticket_on_handoff"):
+        try:
+            from app.services.ticket_service import create_ticket
 
-        ticket = create_ticket(
-            db,
-            project_id=project.id,
-            title=f"转人工：{visitor.display_name}",
-            description=reason,
-            category="其他",
-            priority=payload.urgency or "normal",
-            source="manual_service",
-            status="pending_human",
-            visitor_id=visitor.id,
-            session_id=transfer_result.session.id if transfer_result.session else None,
-            platform_id=visitor.platform_id,
-            group_key=visitor.platform_open_id or None,
-            assignee_id=transfer_result.assigned_staff_id,
-        )
-        logger.info(
-            "[TICKET] 转人工自动建单 %s (visitor=%s, staff=%s)",
-            ticket.number, visitor.id, transfer_result.assigned_staff_id,
-        )
-        # H3: 新工单提醒（路由匹配 → 站内）
-        await _notify_staff_new_ticket(db, project, ticket, visitor)
-    except Exception as e:
-        # 建单失败不阻断转人工主流程（标签/分配已生效）
-        logger.error("[TICKET] 转人工建单失败: %s", e)
+            ticket = create_ticket(
+                db,
+                project_id=project.id,
+                title=f"转人工：{visitor.display_name}",
+                description=reason,
+                category="其他",
+                priority=payload.urgency or "normal",
+                source="manual_service",
+                status="pending_human",
+                visitor_id=visitor.id,
+                session_id=transfer_result.session.id if transfer_result.session else None,
+                platform_id=visitor.platform_id,
+                group_key=visitor.platform_open_id or None,
+                assignee_id=transfer_result.assigned_staff_id,
+            )
+            logger.info(
+                "[TICKET] 转人工自动建单 %s (visitor=%s, staff=%s)",
+                ticket.number, visitor.id, transfer_result.assigned_staff_id,
+            )
+            # H3: 新工单提醒（路由匹配 → 站内）
+            await _notify_staff_new_ticket(db, project, ticket, visitor)
+        except Exception as e:
+            # 建单失败不阻断转人工主流程（标签/分配已生效）
+            logger.error("[TICKET] 转人工建单失败: %s", e)
 
     if transfer_result.assigned_staff_id:
         return {
@@ -315,6 +316,21 @@ async def _handle_manual_service_request(event: AIServiceEvent, project: Project
         "channel_type": None,
         "message": transfer_result.message,
     }
+
+
+# ============ H11: 建单策略开关（settings 不存在或开关 True 时建单）============
+def _ticket_policy_enabled(db: Session, project_id: UUID, key: str) -> bool:
+    """读取 api_ticket_settings 建单策略开关。settings 不存在 → 默认开启。"""
+    try:
+        from app.models import TicketSettings
+
+        st = db.query(TicketSettings).filter(TicketSettings.project_id == project_id).first()
+        if st is None:
+            return True
+        return bool(getattr(st, key, True))
+    except Exception as e:
+        logger.warning("[TICKET] 策略开关读取失败(%s): %s", key, e)
+        return True
 
 
 # ============ H3: 新工单提醒（路由匹配 → 站内 + 记录企微 userid）============
@@ -668,7 +684,7 @@ async def _handle_visitor_sentiment_update(event: AIServiceEvent, project: Proje
     negative = (satisfaction is not None and satisfaction <= 2) or (
         emotion is not None and emotion <= 2
     )
-    if negative:
+    if negative and _ticket_policy_enabled(db, project.id, "create_ticket_on_negative"):
         try:
             # 已有未完结工单则不再重复建
             existing_ticket = (

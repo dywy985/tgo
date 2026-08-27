@@ -732,6 +732,7 @@
       "aiPersona": "AI画像",
       "relatedTickets": "相关工单"
     },
+    "noRelatedTickets": "暂无工单",
     "aiInsights": {
       "satisfactionScore": "满意度评分",
       "emotionScore": "情绪评分",
