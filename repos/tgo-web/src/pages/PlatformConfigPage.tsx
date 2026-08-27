@@ -6,6 +6,7 @@ import PlatformConfig from '@/components/platforms/PlatformConfig';
 import WebsitePlatformConfig from '@/components/platforms/WebsitePlatformConfig';
 import WeComPlatformConfig from '@/components/platforms/WeComPlatformConfig';
 import WeComBotPlatformConfig from '@/components/platforms/WeComBotPlatformConfig';
+import WeComBotLongConnConfig from '@/components/platforms/WeComBotLongConnConfig';
 import FeishuBotPlatformConfig from '@/components/platforms/FeishuBotPlatformConfig';
 import DingTalkBotPlatformConfig from '@/components/platforms/DingTalkBotPlatformConfig';
 import EmailPlatformConfig from '@/components/platforms/EmailPlatformConfig';
@@ -105,9 +106,14 @@ const PlatformConfigPage: React.FC = () => {
   if ((platform.type as any) === 'wecom') {
     return <WeComPlatformConfig platform={platform} />;
   }
-  // 企业微信机器人（WeCom Bot）
+  // 企业微信机器人（WeCom Bot）— 长连接模式配置 + Webhook 模式备选
   if ((platform.type as any) === 'wecom_bot') {
-    return <WeComBotPlatformConfig platform={platform} />;
+    return (
+      <div className="flex flex-col gap-6 w-full">
+        <WeComBotLongConnConfig />
+        <WeComBotPlatformConfig platform={platform} />
+      </div>
+    );
   }
   // 飞书机器人（Feishu Bot）
   if ((platform.type as any) === 'feishu_bot') {
