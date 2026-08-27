@@ -90,6 +90,7 @@ async def transfer_to_staff(
     ai_disabled: Optional[bool] = None,
     add_to_queue_if_no_staff: bool = True,
     send_notification: bool = True,
+    exclude_agent: bool = False,
 ) -> TransferResult:
     """
     Transfer a visitor to staff service.
@@ -196,6 +197,7 @@ async def transfer_to_staff(
             target_staff_id=target_staff_id,
             visitor_message=visitor_message,
             assignment_rule=assignment_rule,
+            exclude_agent=exclude_agent,
         )
         
         assigned_staff_id = assignment_result.assigned_staff_id
@@ -328,6 +330,7 @@ async def assign_staff(
     target_staff_id: Optional[UUID] = None,
     visitor_message: Optional[str] = None,
     assignment_rule: Optional[VisitorAssignmentRule] = None,
+    exclude_agent: bool = False,
 ) -> StaffAssignmentResult:
     """
     Assign a staff member to handle a visitor.
@@ -395,6 +398,7 @@ async def assign_staff(
             db=db,
             project_id=project_id,
             assignment_rule=assignment_rule,
+            exclude_agent=exclude_agent,
         )
         
         candidate_staff_ids = [c.id for c in candidates]
@@ -844,6 +848,7 @@ async def _get_available_staff_candidates(
     db: Session,
     project_id: UUID,
     assignment_rule: Optional[VisitorAssignmentRule] = None,
+    exclude_agent: bool = False,
 ) -> List[StaffCandidate]:
     """
     Get available staff candidates for assignment.
@@ -871,6 +876,9 @@ async def _get_available_staff_candidates(
         Staff.is_active == True,  # noqa: E712 - SQLAlchemy requires == for boolean
         Staff.service_paused == False,  # noqa: E712 - SQLAlchemy requires == for boolean
     )
+    if exclude_agent:
+        # 转人工时排除 AI 坐席（role=agent），只保留人工坐席候选
+        staff_query = staff_query.filter(Staff.role != "agent")
     
     available_staff = staff_query.all()
     

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import uuid
 import xml.etree.ElementTree as ET
 import base64
@@ -1133,6 +1134,10 @@ async def _handle_wecom_reader_webhook(
     msg_type = str(payload.get("msg_type") or "text").lower()
     is_from_colleague = bool(payload.get("is_from_colleague", False))
 
+    # ============ H4: 客服指令回执（#完成 TK-xxx → 工单 resolved）============
+    if is_from_colleague and content:
+        await _handle_staff_ticket_command(content, from_uid, sender_name, chatid)
+
     if not from_uid or not content:
         logging.warning("[WECOM_READER] Missing from_uid/content: %s", payload)
         return {"ok": True}
@@ -1185,6 +1190,46 @@ async def _handle_wecom_reader_webhook(
         return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     return {"ok": True}
+
+
+# ============ H4: 客服指令回执（#完成 TK-xxx → 工单 resolved）============
+_TICKET_CMD_RE = re.compile(r"#\s*完成\s*(TK-\d{8}-\d{4})", re.IGNORECASE)
+
+
+async def _handle_staff_ticket_command(content: str, from_uid: str, sender_name: str, chatid: str) -> None:
+    """识别客服本人发送的 '#完成 TK-xxx' 指令，调 tgo-api 将工单标记 resolved。
+
+    非阻塞：失败只记日志，不影响回调主流程。
+    """
+    if not content:
+        return
+    m = _TICKET_CMD_RE.search(content)
+    if not m:
+        return
+    number = m.group(1).upper()
+    try:
+        import httpx
+
+        payload = {
+            "number": number,
+            "action": "complete",
+            "note": f"客服 {sender_name or from_uid} 在企微指令回执标记完成",
+            "operator": sender_name or from_uid,
+        }
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                "http://tgo-api:8001/internal/tickets/command",
+                json=payload,
+            )
+        if resp.status_code == 200:
+            logging.info("[WECOM_READER] 指令回执成功: %s -> resolved", number)
+        else:
+            logging.warning(
+                "[WECOM_READER] 指令回执失败: %s HTTP %s: %s",
+                number, resp.status_code, resp.text[:200],
+            )
+    except Exception as e:
+        logging.error("[WECOM_READER] 指令回执异常 %s: %s", number, e)
 
 
 @router.post("/v1/platforms/callback/{platform_api_key}", responses={400: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}, 501: {"model": ErrorResponse}})

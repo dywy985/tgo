@@ -27,6 +27,9 @@ from app.models import (
     VisitorWaitingQueue,
     WaitingStatus,
     AssignmentSource,
+    VisitorSession,
+    SessionStatus,
+    Ticket,
 )
 from app.schemas.ai import (
     AIServiceEvent,
@@ -176,34 +179,56 @@ async def _handle_manual_service_request(event: AIServiceEvent, project: Project
         )
 
     # Check if visitor can enter queue based on their status
+    # ---- 判断当前服务状态：AI 坐席服务中 ≠ 已人工接管，允许换人工 ----
+    existing_queue = db.query(VisitorWaitingQueue).filter(
+        VisitorWaitingQueue.visitor_id == visitor.id,
+        VisitorWaitingQueue.project_id == project.id,
+        VisitorWaitingQueue.status == WaitingStatus.WAITING.value,
+    ).first()
+
+    if existing_queue:
+        return {
+            "entry_id": str(existing_queue.id),
+            "status": existing_queue.status,
+            "position": existing_queue.position,
+            "priority": existing_queue.priority,
+            "channel_id": existing_queue.channel_id,
+            "channel_type": existing_queue.channel_type,
+            "message": f"Visitor already in queue (status: {visitor.service_status})",
+        }
+
+    # 当前会话的服务者（区分 AI 坐席与人工坐席）
+    serving_staff = None
     if not visitor.is_unassigned:
-        # Visitor is already in queue or being served - return existing queue info
-        existing_queue = db.query(VisitorWaitingQueue).filter(
-            VisitorWaitingQueue.visitor_id == visitor.id,
-            VisitorWaitingQueue.project_id == project.id,
-            VisitorWaitingQueue.status == WaitingStatus.WAITING.value,
-        ).first()
-        
-        if existing_queue:
-            return {
-                "entry_id": str(existing_queue.id),
-                "status": existing_queue.status,
-                "position": existing_queue.position,
-                "priority": existing_queue.priority,
-                "channel_id": existing_queue.channel_id,
-                "channel_type": existing_queue.channel_type,
-                "message": f"Visitor already in queue (status: {visitor.service_status})",
-            }
-        else:
-            return {
-                "entry_id": None,
-                "status": visitor.service_status,
-                "position": None,
-                "priority": None,
-                "channel_id": None,
-                "channel_type": None,
-                "message": f"Visitor cannot enter queue (status: {visitor.service_status})",
-            }
+        active_session = (
+            db.query(VisitorSession)
+            .filter(
+                VisitorSession.visitor_id == visitor.id,
+                VisitorSession.status == SessionStatus.OPEN.value,
+            )
+            .order_by(VisitorSession.created_at.desc())
+            .first()
+        )
+        if active_session and active_session.staff_id:
+            serving_staff = (
+                db.query(Staff)
+                .filter(Staff.id == active_session.staff_id, Staff.deleted_at.is_(None))
+                .first()
+            )
+
+    is_ai_serving = serving_staff is not None and serving_staff.role == "agent"
+
+    if not visitor.is_unassigned and not is_ai_serving:
+        # 已由人工坐席服务 / 无法进入队列 —— 不重复转人工
+        return {
+            "entry_id": None,
+            "status": visitor.service_status,
+            "position": None,
+            "priority": None,
+            "channel_id": None,
+            "channel_type": None,
+            "message": f"Visitor cannot enter queue (status: {visitor.service_status})",
+        }
 
     reason = (payload.reason or "").strip()
     if not reason:
@@ -219,6 +244,10 @@ async def _handle_manual_service_request(event: AIServiceEvent, project: Project
         source=AssignmentSource.RULE,
         visitor_message=reason,
         add_to_queue_if_no_staff=True,
+        # AI 坐席服务中 → 跳过状态检查，允许换人工
+        skip_queue_status_check=is_ai_serving,
+        # 转人工候选排除 AI 坐席（role=agent）
+        exclude_agent=True,
         # manual_service.request implies AI should be disabled
         ai_disabled=True,
     )
@@ -228,6 +257,35 @@ async def _handle_manual_service_request(event: AIServiceEvent, project: Project
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to transfer visitor to staff: {transfer_result.message}",
         )
+
+    # ============ H1: 转人工自动建单 (source=manual_service, status=pending_human) ============
+    try:
+        from app.services.ticket_service import create_ticket
+
+        ticket = create_ticket(
+            db,
+            project_id=project.id,
+            title=f"转人工：{visitor.display_name}",
+            description=reason,
+            category="其他",
+            priority=payload.urgency or "normal",
+            source="manual_service",
+            status="pending_human",
+            visitor_id=visitor.id,
+            session_id=transfer_result.session.id if transfer_result.session else None,
+            platform_id=visitor.platform_id,
+            group_key=visitor.platform_open_id or None,
+            assignee_id=transfer_result.assigned_staff_id,
+        )
+        logger.info(
+            "[TICKET] 转人工自动建单 %s (visitor=%s, staff=%s)",
+            ticket.number, visitor.id, transfer_result.assigned_staff_id,
+        )
+        # H3: 新工单提醒（路由匹配 → 站内）
+        await _notify_staff_new_ticket(db, project, ticket, visitor)
+    except Exception as e:
+        # 建单失败不阻断转人工主流程（标签/分配已生效）
+        logger.error("[TICKET] 转人工建单失败: %s", e)
 
     if transfer_result.assigned_staff_id:
         return {
@@ -257,6 +315,70 @@ async def _handle_manual_service_request(event: AIServiceEvent, project: Project
         "channel_type": None,
         "message": transfer_result.message,
     }
+
+
+# ============ H3: 新工单提醒（路由匹配 → 站内 + 记录企微 userid）============
+async def _notify_staff_new_ticket(db: Session, project: Project, ticket: Any, visitor: Any) -> None:
+    """工单创建后提醒客服：按 api_ticket_routes 匹配（platform_id→group_key 优先级）。
+
+    - 站内提醒：WuKongIM 发给路由目标 staff（best-effort，失败不影响主流程）
+    - 记录提醒目标到 ticket.ai_summary.notify（含 wecom_userid，供企微通道接入后推送）
+    """
+    try:
+        from app.models import TicketRoute
+
+        route = None
+        if ticket.platform_id:
+            route = (
+                db.query(TicketRoute)
+                .filter(
+                    TicketRoute.project_id == project.id,
+                    TicketRoute.deleted_at.is_(None),
+                    TicketRoute.platform_id == ticket.platform_id,
+                )
+                .order_by(TicketRoute.priority.desc())
+                .first()
+            )
+        if route is None:
+            route = (
+                db.query(TicketRoute)
+                .filter(
+                    TicketRoute.project_id == project.id,
+                    TicketRoute.deleted_at.is_(None),
+                    TicketRoute.platform_id.is_(None),
+                )
+                .order_by(TicketRoute.priority.desc())
+                .first()
+            )
+        if route is None:
+            return
+
+        # 记录提醒目标
+        summary = dict(ticket.ai_summary or {})
+        summary["notify"] = {
+            "staff_id": str(route.staff_id) if route.staff_id else None,
+            "staff_name": route.staff_name,
+            "wecom_userid": route.wecom_userid,
+        }
+        ticket.ai_summary = summary
+        db.commit()
+
+        # 站内提醒（WuKongIM 单聊，发给路由目标客服）
+        if route.staff_id:
+            from app.services.wukongim_client import wukongim_client
+
+            await wukongim_client.send_text_message(
+                from_uid=f"{route.staff_id}-staff",
+                channel_id=f"{route.staff_id}-staff",
+                channel_type=1,  # 单聊
+                content=(
+                    f"【新工单提醒】{ticket.number} {ticket.title} "
+                    f"(优先级: {ticket.priority}) 请及时处理"
+                ),
+            )
+        logger.info("[TICKET] 新工单提醒已发送: %s -> %s", ticket.number, route.staff_name)
+    except Exception as e:
+        logger.warning("[TICKET] 新工单提醒失败: %s", e)
 
 
 async def _handle_visitor_info_update(event: AIServiceEvent, project: Project, db: Session) -> dict:
@@ -540,6 +662,50 @@ async def _handle_visitor_sentiment_update(event: AIServiceEvent, project: Proje
     db.refresh(log_entry)
 
     await notify_visitor_profile_updated(db, visitor)
+
+    # ============ H6: 负面情绪自动建单 (source=ai_auto) ============
+    # 判据：满意度 ≤2 或 情绪分 ≤2（0-5 分制）
+    negative = (satisfaction is not None and satisfaction <= 2) or (
+        emotion is not None and emotion <= 2
+    )
+    if negative:
+        try:
+            # 已有未完结工单则不再重复建
+            existing_ticket = (
+                db.query(Ticket)
+                .filter(
+                    Ticket.visitor_id == visitor.id,
+                    Ticket.status.in_(
+                        ["open", "waiting_customer", "pending_human", "processing"]
+                    ),
+                    Ticket.deleted_at.is_(None),
+                )
+                .first()
+            )
+            if not existing_ticket:
+                from app.services.ticket_service import create_ticket
+
+                ticket = create_ticket(
+                    db,
+                    project_id=project.id,
+                    title=f"负面情绪：{visitor.display_name}",
+                    description=(
+                        f"AI 检测到访客负面情绪（satisfaction={satisfaction}, "
+                        f"emotion={emotion}, intent={allowed_intent or 'unknown'}）"
+                    ),
+                    category="其他",
+                    priority="high",
+                    source="ai_auto",
+                    status="open",
+                    visitor_id=visitor.id,
+                    platform_id=visitor.platform_id,
+                    group_key=visitor.platform_open_id or None,
+                )
+                logger.info("[TICKET] 负面情绪自动建单 %s (visitor=%s)", ticket.number, visitor.id)
+                # H3: 新工单提醒（路由匹配 → 站内）
+                await _notify_staff_new_ticket(db, project, ticket, visitor)
+        except Exception as e:
+            logger.error("[TICKET] 负面情绪建单失败: %s", e)
 
     logger.info(
         "Visitor sentiment updated",

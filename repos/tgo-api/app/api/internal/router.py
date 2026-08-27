@@ -6,7 +6,7 @@ These endpoints are designed for inter-service communication within the internal
 
 from fastapi import APIRouter
 
-from app.api.internal.endpoints import ai_events, users, store
+from app.api.internal.endpoints import ai_events, users, store, tickets_command
 
 internal_router = APIRouter()
 
@@ -15,6 +15,13 @@ internal_router.include_router(
     ai_events.router,
     prefix="/ai/events",
     tags=["Internal AI Events"]
+)
+
+# Ticket command (客服指令回执: #完成 TK-xxx)
+internal_router.include_router(
+    tickets_command.router,
+    prefix="/tickets/command",
+    tags=["Internal Tickets"],
 )
 
 # New users endpoint
