@@ -39,7 +39,7 @@ interface TriggerConfig {
 
 const WecomDebugPanel: React.FC = () => {
   const { t } = useTranslation();
-  const [tab, setTab] = useState<'messages' | 'send' | 'trigger'>('messages');
+  const [tab, setTab] = useState<'messages' | 'send' | 'trigger' | 'bot'>('messages');
   const [sessions, setSessions] = useState<WecomSession[]>([]);
   const [currentConv, setCurrentConv] = useState<string>('');
   const [messages, setMessages] = useState<WecomMessage[]>([]);
@@ -62,6 +62,22 @@ const WecomDebugPanel: React.FC = () => {
   });
   const [savingTrigger, setSavingTrigger] = useState(false);
   const [triggerSaved, setTriggerSaved] = useState(false);
+
+  // 机器人消息 (aibot 长连接接收)
+  const [botMsgs, setBotMsgs] = useState<any[]>([]);
+  const [botLoading, setBotLoading] = useState(false);
+
+  const loadBotMsgs = useCallback(async () => {
+    setBotLoading(true);
+    try {
+      const d = await apiClient.get<{ ok: boolean; count: number; messages: any[] }>('/v1/debug/wecom/aibot-messages?n=50');
+      setBotMsgs(d.messages || []);
+    } catch (e: any) {
+      setBotMsgs([]);
+    } finally {
+      setBotLoading(false);
+    }
+  }, []);
 
   const loadTrigger = useCallback(async () => {
     try {
@@ -168,7 +184,7 @@ const WecomDebugPanel: React.FC = () => {
           </p>
         </div>
         <button
-          onClick={() => { loadSessions(); if (currentConv) loadMessages(currentConv); }}
+          onClick={() => { loadSessions(); if (currentConv) loadMessages(currentConv); if (tab === 'bot') loadBotMsgs(); }}
           className="flex items-center gap-1 px-3 py-1.5 rounded-md text-sm bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300 hover:bg-blue-100"
         >
           <FiRefreshCw /> {t('common.refresh', '刷新')}
@@ -182,7 +198,8 @@ const WecomDebugPanel: React.FC = () => {
           ['messages', '聊天记录'],
           ['send', '发送调试'],
           ['trigger', '触发设置'],
-        ] as Array<['messages' | 'send' | 'trigger', string]>).map(([id, label]) => (
+          ['bot', '机器人消息'],
+        ] as Array<['messages' | 'send' | 'trigger' | 'bot', string]>).map(([id, label]) => (
           <button
             key={id}
             onClick={() => setTab(id)}
@@ -193,7 +210,39 @@ const WecomDebugPanel: React.FC = () => {
         ))}
       </div>
 
-      {tab !== 'trigger' ? (
+      {tab === 'bot' ? (
+      /* ---------- 机器人消息 ---------- */
+      <div className="flex-1 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 flex flex-col gap-3 overflow-y-auto min-h-0">
+        <div className="flex items-center justify-between">
+          <div className="text-sm font-medium text-gray-700 dark:text-gray-200">机器人收到的消息</div>
+          <button onClick={loadBotMsgs} className="text-xs text-blue-500 hover:underline">刷新</button>
+        </div>
+        <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
+          企业微信机器人长连接收到的消息（@机器人/群消息）。消息同时转发到 TGO 入库，可在"聊天记录"查看。
+        </p>
+        {botLoading ? (
+          <div className="text-xs text-gray-400">加载中...</div>
+        ) : botMsgs.length === 0 ? (
+          <div className="text-xs text-gray-400">暂无消息——在企微群里 @机器人 发条消息试试</div>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {botMsgs.slice().reverse().map((m, i) => (
+              <div key={i} className="text-xs border border-gray-200 dark:border-gray-700 rounded-md p-2 bg-gray-50 dark:bg-gray-900/40">
+                <div className="flex justify-between text-gray-400">
+                  <span>{m.roomname || m.chatid || '-'}</span>
+                  <span>{new Date((m.ts || 0) * 1000).toLocaleString()}</span>
+                </div>
+                <div className="mt-1 text-gray-700 dark:text-gray-200">
+                  {m.sender && <span className="text-blue-500 mr-1">{m.sender}:</span>}
+                  {String(m.content || '').slice(0, 200)}
+                </div>
+                <div className="text-gray-400 mt-0.5 font-mono truncate">chatid: {m.chatid || '-'}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      ) : tab !== 'trigger' ? (
       <div className="flex-1 flex gap-4 min-h-0">
         {/* 会话列表 */}
         <div className="w-56 shrink-0 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 flex flex-col">

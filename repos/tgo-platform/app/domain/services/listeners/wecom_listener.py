@@ -65,7 +65,7 @@ def _should_trigger(source_type: str, rec, trigger_cfg: dict | None) -> tuple[bo
       llm_prefilter: 模糊区是否走 LLM 预判 (默认 false)
       ignore_members: 忽略成员名单 (发送者名命中不触发)
     """
-    if source_type not in ("wecom_reader", "worktool"):
+    if source_type not in ("wecom_reader", "worktool", "wecom_bot"):
         return True, "other_platform"
     try:
         raw = rec.raw_payload or {}
@@ -144,7 +144,7 @@ class WeComChannelListener:
             rows = (
                 await session.execute(
                     select(Platform.id, Platform.project_id, Platform.api_key, Platform.config, Platform.type)
-                    .where(Platform.is_active.is_(True), Platform.type.in_(["wecom", "wecom_bot", "wecom_reader", "worktool"]))
+                    .where(Platform.is_active.is_(True), Platform.type.in_(["wecom", "wecom_bot", "wecom_bot_api", "wecom_reader", "worktool"]))
                 )
             ).all()
         platforms: list[_PlatformEntry] = []

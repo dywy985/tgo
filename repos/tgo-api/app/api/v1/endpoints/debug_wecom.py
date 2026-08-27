@@ -168,6 +168,18 @@ async def wecom_worktool_config_put(
     return {"ok": True, "worktool": {"robot_id": robot_id, "gateway_url": gateway_url}}
 
 
+@router.get("/wecom/aibot-messages")
+async def wecom_aibot_messages_get(
+    n: int = 50,
+    current_user: Staff = Depends(get_current_active_user),
+) -> dict:
+    """机器人长连接收到的消息 (调试): 代理到 Windows 发送服务 /api/messages"""
+    data, code = await _aibot_http("GET", "/api/messages?n=%d" % max(1, min(n, 500)))
+    if code >= 400:
+        raise HTTPException(status_code=code, detail=data.get("error") or data)
+    return data
+
+
 @router.get("/wecom/trigger")
 async def wecom_trigger_get(
     db: Session = Depends(get_db),
