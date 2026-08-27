@@ -38,82 +38,15 @@ export default defineConfig({
     },
   },
   build: {
-    rollupOptions: {
-      output: {
-        manualChunks(id) {
-          // React core libraries + react-i18next (must be together)
-          if (id.includes('node_modules/react/') ||
-              id.includes('node_modules/react-dom/') ||
-              id.includes('node_modules/scheduler/') ||
-              id.includes('node_modules/react-i18next')) {
-            return 'vendor-react';
-          }
-
-          // React Router
-          if (id.includes('node_modules/react-router') ||
-              id.includes('node_modules/@remix-run/router')) {
-            return 'vendor-router';
-          }
-
-          // Internationalization (i18next core only, without react-i18next)
-          if (id.includes('node_modules/i18next') &&
-              !id.includes('node_modules/react-i18next')) {
-            return 'vendor-i18n';
-          }
-
-          // Lucide React icons (large library)
-          if (id.includes('node_modules/lucide-react')) {
-            return 'vendor-lucide';
-          }
-
-          // React Icons (large library)
-          if (id.includes('node_modules/react-icons')) {
-            return 'vendor-react-icons';
-          }
-
-          // Markdown and code highlighting
-          if (id.includes('node_modules/marked') ||
-              id.includes('node_modules/highlight.js')) {
-            return 'vendor-markdown';
-          }
-
-          // UI components
-          if (id.includes('node_modules/react-easy-crop') ||
-              id.includes('node_modules/yet-another-react-lightbox') ||
-              id.includes('node_modules/dompurify')) {
-            return 'vendor-ui';
-          }
-
-          // Miscellaneous dependencies
-          if (id.includes('node_modules/zustand') ||
-              id.includes('node_modules/easyjssdk') ||
-              id.includes('node_modules/js-yaml') ||
-              id.includes('node_modules/openapi-types')) {
-            return 'vendor-misc';
-          }
-
-          // Split large application code by directory
-          if (id.includes('/src/pages/')) {
-            return 'app-pages';
-          }
-
-          if (id.includes('/src/components/')) {
-            return 'app-components';
-          }
-
-          // Don't manually chunk stores - let Vite handle dependencies
-          // to avoid initialization order issues
-          // if (id.includes('/src/stores/')) {
-          //   return 'app-stores';
-          // }
-
-          if (id.includes('/src/services/')) {
-            return 'app-services';
-          }
-        },
-      },
-    },
-    // Increase chunk size warning limit to 1000 kB
+    // 自定义 manualChunks 曾导致 vendor-react <-> app-components 循环依赖
+    // (React.forwardRef undefined / 白屏)。改用 vite 自动分包, 依赖图由 rollup 正确排序。
+    // rollupOptions: {
+    //   output: {
+    //     manualChunks(id) {
+    //       ...
+    //     },
+    //   },
+    // },
     chunkSizeWarningLimit: 1000,
   },
 })
