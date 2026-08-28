@@ -20,6 +20,7 @@ export interface StaffUpdateRequest {
   agent_id?: string | null;
   password?: string;
   description?: string | null;
+  wecom_userid?: string | null;
 }
 
 // Pagination metadata

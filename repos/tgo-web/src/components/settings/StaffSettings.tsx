@@ -53,6 +53,7 @@ interface StaffFormData {
   password: string;
   confirmPassword: string;
   description: string;
+  wecom_userid: string;
   role: StaffRole;
   status: StaffStatus;
 }
@@ -64,6 +65,7 @@ const initialFormData: StaffFormData = {
   password: '',
   confirmPassword: '',
   description: '',
+  wecom_userid: '',
   role: 'user',
   status: 'offline',
 };
@@ -98,6 +100,7 @@ const StaffDialog: React.FC<StaffDialogProps> = ({
         password: '',
         confirmPassword: '',
         description: staff.description || '',
+        wecom_userid: staff.wecom_userid || '',
         role: (staff.role as StaffRole) || 'user',
         status: (staff.status as StaffStatus) || 'offline',
       });
@@ -153,6 +156,7 @@ const StaffDialog: React.FC<StaffDialogProps> = ({
       const updateData: StaffUpdateRequest = {
         nickname: formData.name,
         description: formData.description || null,
+        wecom_userid: formData.wecom_userid.trim() || null,
         role: formData.role,
         status: formData.status,
       };
@@ -166,6 +170,7 @@ const StaffDialog: React.FC<StaffDialogProps> = ({
         password: formData.password,
         nickname: formData.name,
         description: formData.description || null,
+        wecom_userid: formData.wecom_userid.trim() || null,
       };
       await onSubmit(createData);
     }
@@ -347,6 +352,24 @@ const StaffDialog: React.FC<StaffDialogProps> = ({
                 transition-colors resize-none
               "
               placeholder={t('settings.staff.descriptionPlaceholder', '请输入坐席描述（可选）')}
+            />
+          </div>
+
+          {/* WeCom userid - Optional */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              {t('settings.staff.wecomUseridLabel', '企微 userid')}
+            </label>
+            <input
+              value={formData.wecom_userid}
+              onChange={(e) => setFormData({ ...formData, wecom_userid: e.target.value })}
+              className="
+                w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600
+                bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200
+                focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-0
+                transition-colors
+              "
+              placeholder={t('settings.staff.wecomUseridPlaceholder', '企微成员 userid（上线提醒企微推送目标，可选）')}
             />
           </div>
 
