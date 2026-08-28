@@ -1071,25 +1071,29 @@ const StaffSettings: React.FC = () => {
                       />
                     </div>
 
-                    <div className="md:col-span-2 flex items-start gap-1 pt-6">
-                      <button
-                        type="button"
-                        onClick={handleAddRoute}
-                        disabled={routeSaving}
-                        className="flex-1 px-3 py-1.5 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg whitespace-nowrap disabled:opacity-50"
-                      >
-                        {routeSaving ? '保存中…' : editingRouteId ? '保存修改' : '添加'}
-                      </button>
-                      {editingRouteId && (
+                    <div className="md:col-span-2">
+                      {/* label 占位：与左侧输入框的 label+mb 等高，保证按钮上沿=输入框上沿 */}
+                      <div className="h-[18px] mb-1" />
+                      <div className="flex items-center gap-1">
                         <button
                           type="button"
-                          onClick={handleCancelEditRoute}
-                          className="px-2 py-1.5 text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 shrink-0"
-                          title="取消编辑"
+                          onClick={handleAddRoute}
+                          disabled={routeSaving}
+                          className="flex-1 px-3 py-1.5 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg whitespace-nowrap disabled:opacity-50"
                         >
-                          ✕
+                          {routeSaving ? '保存中…' : editingRouteId ? '保存修改' : '添加'}
                         </button>
-                      )}
+                        {editingRouteId && (
+                          <button
+                            type="button"
+                            onClick={handleCancelEditRoute}
+                            className="px-2 py-1.5 text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 shrink-0"
+                            title="取消编辑"
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
                   {editingRouteId && (
