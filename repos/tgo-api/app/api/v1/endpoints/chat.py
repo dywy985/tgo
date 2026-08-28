@@ -305,6 +305,28 @@ async def chat_completion(req: ChatCompletionRequest, db: Session = Depends(get_
             channel_type=CHANNEL_TYPE_CUSTOMER_SERVICE,
         )
 
+    # 2.1) 消息计数(方案B): 访客消息落库前确保存在 open 会话并累计 visitor 计数
+    # 任何提前 return (transfer 失败/排队/AI禁用) 前都已记录, 保证统计不遗漏
+    # 统计为辅助功能: DB 不可用(如单元测试用 NoOp stub) 时不得阻塞聊天主流程
+    try:
+        from app.services import message_stats_service
+        msg_platform_id = getattr(platform, "id", None) or getattr(visitor, "platform_id", None)
+        msg_session = message_stats_service.ensure_open_session(
+            db,
+            visitor_id=visitor.id,
+            project_id=project.id,
+            platform_id=msg_platform_id,
+        )
+        message_stats_service.record_message(
+            db,
+            session_id=msg_session.id,
+            kind="visitor",
+            count=1,
+        )
+        db.commit()
+    except Exception as msg_stats_err:
+        logger.warning("message_stats: visitor count skipped (non-fatal): %s", msg_stats_err)
+
     # 3) Prepare correlation and session IDs
     if req.channel_id:
         channel_id_enc = req.channel_id
@@ -502,7 +524,19 @@ async def chat_completion(req: ChatCompletionRequest, db: Session = Depends(get_
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=result.get("error", "AI processing failed")
             )
-            
+
+        # 方案B: AI 回复成功 -> 累计 ai 计数 (辅助功能, DB异常不阻塞主流程)
+        try:
+            from app.services import message_stats_service
+            ai_platform_id = getattr(platform, "id", None) or getattr(visitor, "platform_id", None)
+            ai_session = message_stats_service.ensure_open_session(
+                db, visitor_id=visitor.id, project_id=project.id, platform_id=ai_platform_id
+            )
+            message_stats_service.record_message(db, session_id=ai_session.id, kind="ai", count=1)
+            db.commit()
+        except Exception as ai_stats_err:
+            logger.warning("message_stats: AI count skipped (non-fatal): %s", ai_stats_err)
+
         return {
             "success": True,
             "message": result["content"],
@@ -511,6 +545,7 @@ async def chat_completion(req: ChatCompletionRequest, db: Session = Depends(get_
 
     # 10) Streaming mode: stream response to client
     async def ai_event_generator() -> Any:
+        ai_replied = False
         async for event_payload in chat_service.process_ai_stream_to_wukongim(
             project_id=str(project.id),
             user_id=str(visitor.id),
@@ -525,6 +560,23 @@ async def chat_completion(req: ChatCompletionRequest, db: Session = Depends(get_
             **agent_runtime_kwargs,
         ):
             yield chat_service.sse_format(event_payload)
+            # 方案B: AI 回复完成事件 -> 累计 ai 计数 (仅在真正产出回复后计一次)
+            et = (event_payload or {}).get("event_type")
+            if et == "agent_response_complete":
+                ai_replied = True
+        if ai_replied:
+            from app.services import message_stats_service
+            try:
+                ai_platform_id = getattr(platform, "id", None) or getattr(visitor, "platform_id", None)
+                ai_session = message_stats_service.ensure_open_session(
+                    db, visitor_id=visitor.id, project_id=project.id, platform_id=ai_platform_id
+                )
+                message_stats_service.record_message(
+                    db, session_id=ai_session.id, kind="ai", count=1
+                )
+                db.commit()
+            except Exception as e:
+                logger.warning("message_stats: AI reply count failed (non-fatal): %s", e)
 
     return StreamingResponse(ai_event_generator(), media_type="text/event-stream")
 
@@ -636,6 +688,46 @@ async def staff_send_platform_message(
     }
     passthrough_headers = {k: v for k, v in resp.headers.items() if k.lower() not in hop_by_hop}
     media_type = resp.headers.get("content-type")
+
+    # ============ 状态自动化: 人工回复成功 -> 该访客待处理工单自动流转 processing ============
+    # 转人工建单自动标记 pending_human (已实现); 人工只需选择"是否解决"等终态
+    if resp.status_code == 200:
+        try:
+            from app.api.v1.endpoints.tickets import _apply_status_transition
+            from app.models.ticket import Ticket
+            pending = (
+                db.query(Ticket)
+                .filter(
+                    Ticket.visitor_id == visitor.id,
+                    Ticket.deleted_at.is_(None),
+                    Ticket.status.in_(["pending_human", "open"]),
+                )
+                .order_by(Ticket.created_at.desc())
+                .first()
+            )
+            if pending:
+                _apply_status_transition(
+                    db, pending, "processing",
+                    operator=None, operator_type="system",
+                    note="人工回复触发自动处理中",
+                )
+        except Exception:
+            db.rollback()
+
+        # 方案B: 人工回复成功 -> 累计 staff 计数
+        try:
+            from app.services import message_stats_service
+            staff_session = message_stats_service.ensure_open_session(
+                db, visitor_id=visitor.id, project_id=current_user.project_id,
+                platform_id=platform.id,
+            )
+            message_stats_service.record_message(
+                db, session_id=staff_session.id, kind="staff", count=1
+            )
+            db.commit()
+        except Exception as e:
+            logger.warning("message_stats: staff reply count failed (non-fatal): %s", e)
+
     return Response(content=resp.content, status_code=resp.status_code, headers=passthrough_headers, media_type=media_type)
 
 
