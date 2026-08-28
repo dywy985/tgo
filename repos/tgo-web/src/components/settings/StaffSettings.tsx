@@ -551,6 +551,7 @@ const StaffSettings: React.FC = () => {
   const [visitorSearching, setVisitorSearching] = useState(false);
   const [routesLoading, setRoutesLoading] = useState(false);
   const [routeSaving, setRouteSaving] = useState(false);
+  const [editingRouteId, setEditingRouteId] = useState<string | null>(null);
 
   const fetchRoutes = useCallback(async () => {
     setRoutesLoading(true);
@@ -618,24 +619,55 @@ const StaffSettings: React.FC = () => {
     }
     setRouteSaving(true);
     try {
-      await ticketsApiService.createRoute({
+      const payload = {
         group_key: routeForm.group_key.trim() || undefined,
         visitor_key: routeForm.visitor_key.trim() || undefined,
         staff_id: routeForm.staff_id || undefined,
         staff_name: routeForm.staff_name.trim(),
         wecom_userid: routeForm.wecom_userid.trim() || undefined,
         priority: routeForm.priority,
-      });
+      };
+      if (editingRouteId) {
+        await ticketsApiService.updateRoute(editingRouteId, payload);
+        showSuccess('路由已更新');
+      } else {
+        await ticketsApiService.createRoute(payload);
+        showSuccess('路由已添加');
+      }
       setRouteForm({ visitor_key: '', visitor_name: '', group_key: '', staff_id: '', staff_name: '', wecom_userid: '', priority: 10 });
+      setEditingRouteId(null);
       setVisitorResults([]);
       fetchRoutes();
       fetchGroupOptions();
-      showSuccess('路由已添加');
     } catch (err) {
-      showError(err instanceof Error ? err.message : '添加失败');
+      showError(err instanceof Error ? err.message : '保存失败');
     } finally {
       setRouteSaving(false);
     }
+  };
+
+  const handleEditRoute = (route: TicketRoute) => {
+    setEditingRouteId(route.id);
+    setRouteForm({
+      visitor_key: route.visitor_key || '',
+      visitor_name: route.visitor_key ? `已配置客户（${route.visitor_key}）` : '',
+      group_key: route.group_key || '',
+      staff_id: route.staff_id || '',
+      staff_name: route.staff_name || '',
+      wecom_userid: route.wecom_userid || '',
+      priority: route.priority,
+    });
+    // 编辑回填的群可能不在下拉选项里（手填的历史值）→ 切到手填模式
+    if (route.group_key && !groupOptions.some((g) => g.group_key === route.group_key)) {
+      setRouteGroupManual(true);
+    }
+    setVisitorResults([]);
+  };
+
+  const handleCancelEditRoute = () => {
+    setEditingRouteId(null);
+    setRouteForm({ visitor_key: '', visitor_name: '', group_key: '', staff_id: '', staff_name: '', wecom_userid: '', priority: 10 });
+    setVisitorResults([]);
   };
 
   const handleDeleteRoute = async (route: TicketRoute) => {
@@ -1039,17 +1071,30 @@ const StaffSettings: React.FC = () => {
                       />
                     </div>
 
-                    <div className="md:col-span-1 flex items-end">
+                    <div className="md:col-span-1 flex items-end gap-1">
                       <button
                         type="button"
                         onClick={handleAddRoute}
                         disabled={routeSaving}
                         className="w-full px-3 py-1.5 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg disabled:opacity-50"
                       >
-                        {routeSaving ? '添加中…' : '添加'}
+                        {routeSaving ? '保存中…' : editingRouteId ? '保存修改' : '添加'}
                       </button>
+                      {editingRouteId && (
+                        <button
+                          type="button"
+                          onClick={handleCancelEditRoute}
+                          className="px-2 py-1.5 text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                          title="取消编辑"
+                        >
+                          ✕
+                        </button>
+                      )}
                     </div>
                   </div>
+                  {editingRouteId && (
+                    <p className="text-[11px] text-blue-600 dark:text-blue-400 mb-2">正在编辑路由 #{editingRouteId.slice(0, 8)}，保存后将覆盖原配置</p>
+                  )}
 
                   {/* 路由列表 */}
                   {routesLoading ? (
@@ -1079,13 +1124,24 @@ const StaffSettings: React.FC = () => {
                             <td className="py-2 font-mono text-xs text-gray-500">{r.wecom_userid || '—'}</td>
                             <td className="py-2 text-gray-600 dark:text-gray-400">{r.priority}</td>
                             <td className="py-2 text-right">
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteRoute(r)}
-                                className="p-1 text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-900/30 rounded"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
+                              <div className="flex items-center justify-end gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => handleEditRoute(r)}
+                                  className="p-1 text-blue-600 hover:text-blue-800 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded"
+                                  title="编辑"
+                                >
+                                  <Edit2 className="w-4 h-4" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteRoute(r)}
+                                  className="p-1 text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-900/30 rounded"
+                                  title="删除"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         ))}
