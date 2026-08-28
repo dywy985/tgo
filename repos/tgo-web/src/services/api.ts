@@ -56,6 +56,7 @@ export interface StaffCreateRequest {
   status?: 'online' | 'offline' | 'busy';
   agent_id?: string | null;
   description?: string | null;
+  wecom_userid?: string | null;
 }
 
 export interface StaffResponse {
@@ -71,6 +72,7 @@ export interface StaffResponse {
   is_working?: boolean; // 是否在工作时间（根据分配规则计算）
   agent_id: string | null;
   description: string | null;
+  wecom_userid?: string | null;
   created_at: string;
   updated_at: string;
 }

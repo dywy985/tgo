@@ -127,6 +127,14 @@ async def login_staff(
 
     logger.info(f"Successful login for user: {user.username}")
 
+    # 登录后：提醒未完成工单（best-effort，不阻塞登录）
+    try:
+        from app.services.staff_notification_service import notify_unfinished_tickets
+
+        await notify_unfinished_tickets(db, user)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"登录后未完成工单提醒失败: {e}")
+
     return StaffLoginResponse(
         access_token=access_token,
         token_type="bearer",
@@ -241,6 +249,7 @@ async def create_staff(
         description=staff_data.description,
         role=staff_data.role,
         status=staff_data.status,
+        wecom_userid=staff_data.wecom_userid,
     )
     
     db.add(staff)
@@ -325,6 +334,13 @@ async def toggle_my_service_paused(
     # Trigger queue processing if staff resumed service
     if not paused:
         await trigger_queue_for_staff(current_user.id, current_user.project_id)
+        # 恢复服务：提醒未完成工单（best-effort）
+        try:
+            from app.services.staff_notification_service import notify_unfinished_tickets
+
+            await notify_unfinished_tickets(db, current_user)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"未完成工单提醒失败: {e}")
     
     # Calculate is_working
     assignment_rule = db.query(VisitorAssignmentRule).filter(
@@ -365,6 +381,13 @@ async def toggle_my_is_active(
     # Trigger queue processing if staff activated service
     if active:
         await trigger_queue_for_staff(current_user.id, current_user.project_id)
+        # 上线：提醒未完成工单（best-effort）
+        try:
+            from app.services.staff_notification_service import notify_unfinished_tickets
+
+            await notify_unfinished_tickets(db, current_user)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"未完成工单提醒失败: {e}")
     
     # Calculate is_working
     assignment_rule = db.query(VisitorAssignmentRule).filter(

@@ -50,27 +50,11 @@ router = APIRouter()
 DEFAULT_CATEGORIES = ["K6客服", "K8客服", "K9客服", "其他"]
 
 
-# ---------------------------------------------------------------------------
-# helpers
-# ---------------------------------------------------------------------------
-
 def _generate_ticket_number(db: Session, project_id: UUID) -> str:
-    """生成工单号 TK-YYYYMMDD-XXXX（当天序号，冲突重试）."""
-    today = datetime.utcnow().strftime("%Y%m%d")
-    prefix = f"TK-{today}-"
-    for _ in range(5):
-        last = (
-            db.query(Ticket.number)
-            .filter(Ticket.project_id == project_id, Ticket.number.like(f"{prefix}%"))
-            .order_by(Ticket.number.desc())
-            .first()
-        )
-        seq = int(last[0].split("-")[-1]) + 1 if last else 1
-        number = f"{prefix}{seq:04d}"
-        exists = db.query(Ticket.id).filter(Ticket.project_id == project_id, Ticket.number == number).first()
-        if not exists:
-            return number
-    raise HTTPException(status_code=500, detail="Failed to generate ticket number")
+    """生成工单号（向后兼容，新代码请用 ticket_service.generate_ticket_number）."""
+    from app.services.ticket_service import generate_ticket_number as _gen
+
+    return _gen(db, project_id)
 
 
 def _get_settings(db: Session, project_id: UUID) -> TicketSettings:
@@ -220,10 +204,32 @@ async def create_ticket(
     db: Session = Depends(get_db),
     current_user: Staff = Depends(require_permission("tickets:create")),
 ) -> TicketResponse:
-    """创建工单（手动建单 / 内部联动）."""
+    """创建工单（手动建单 / 内部联动）. 按 form_schema 校验必填 + 生成可配置工单号."""
+    settings = _get_settings(db, current_user.project_id)
+    schema = settings.form_schema_list
+    form_keys = {f.get("key") for f in schema}
+
+    # 必填校验（内置字段 + 自定义字段）
+    for f in schema:
+        if f.get("required"):
+            key = f.get("key")
+            if key == "title" and not (ticket_data.title or "").strip():
+                raise HTTPException(status_code=400, detail=f"字段「{f.get('label', key)}」为必填")
+            if key == "description" and not (ticket_data.description or "").strip():
+                raise HTTPException(status_code=400, detail=f"字段「{f.get('label', key)}」为必填")
+            if key not in ("title", "description") and key in form_keys:
+                val = (ticket_data.custom_fields or {}).get(key) if key not in ("category", "priority", "assignee_id", "group_key") else getattr(ticket_data, key, None)
+                if val is None or val == "":
+                    raise HTTPException(status_code=400, detail=f"字段「{f.get('label', key)}」为必填")
+
+    # 自定义字段只保留 schema 中定义的 key
+    custom_fields = ticket_data.custom_fields or {}
+    if custom_fields:
+        custom_fields = {k: v for k, v in custom_fields.items() if k in form_keys}
+
     ticket = Ticket(
         project_id=current_user.project_id,
-        number=_generate_ticket_number(db, current_user.project_id),
+        number=generate_ticket_number(db, current_user.project_id, settings.number_format_dict),
         title=ticket_data.title,
         description=ticket_data.description,
         category=ticket_data.category or "other",
@@ -236,6 +242,7 @@ async def create_ticket(
         agent_id=ticket_data.agent_id,
         assignee_id=ticket_data.assignee_id,
         ai_summary=ticket_data.ai_summary,
+        custom_fields=custom_fields or None,
         sla_due_at=ticket_data.sla_due_at,
     )
     db.add(ticket)
@@ -280,7 +287,7 @@ async def ticket_statistics(
     for row in base.with_entities(Ticket.category, func.count()).group_by(Ticket.category).all():
         by_category[row[0]] = row[1]
 
-    unresolved_total = base.filter(Ticket.status.in_(["open", "waiting_customer", "pending_human", "processing"])).count()
+    unresolved_total = base.filter(Ticket.status.in_(["open", "pending_human", "processing"])).count()
     pending_human_total = base.filter(Ticket.status == "pending_human").count()
     ai_resolved_total = base.filter(Ticket.resolve_type == "ai_resolved").count()
     human_resolved_total = base.filter(Ticket.resolve_type == "human_resolved").count()
@@ -303,6 +310,31 @@ async def ticket_statistics(
 # Ticket settings (must be declared before /{ticket_id} routes)
 # ---------------------------------------------------------------------------
 
+def _settings_response(settings: TicketSettings) -> TicketSettingsResponse:
+    """组装设置响应（含表单模板/分级SLA/工单号格式）."""
+    return TicketSettingsResponse(
+        project_id=settings.project_id,
+        sla_timeout_minutes=settings.sla_timeout_minutes,
+        sla_by_priority=settings.sla_by_priority_dict,
+        auto_archive_hours=settings.auto_archive_hours,
+        auto_archive_enabled=settings.auto_archive_enabled,
+        create_ticket_on_unresolved=settings.create_ticket_on_unresolved,
+        create_ticket_on_handoff=settings.create_ticket_on_handoff,
+        create_ticket_on_negative=settings.create_ticket_on_negative,
+        ignore_ack_words=settings.ignore_ack_words,
+        scope_degrade_to_same_group=settings.scope_degrade_to_same_group,
+        reminder_enabled=settings.reminder_enabled,
+        reminder_channels=settings.reminder_channels_dict,
+        urgent_notify_all=settings.urgent_notify_all,
+        categories=settings.categories_list,
+        form_schema=settings.form_schema_list,
+        number_format=settings.number_format_dict,
+        ai_resolve_check_enabled=settings.ai_resolve_check_enabled,
+        auto_resolve_minutes=settings.auto_resolve_minutes,
+        updated_at=settings.updated_at,
+    )
+
+
 @router.get("/settings", response_model=TicketSettingsResponse)
 async def get_ticket_settings(
     db: Session = Depends(get_db),
@@ -310,23 +342,7 @@ async def get_ticket_settings(
 ) -> TicketSettingsResponse:
     """读取工单设置（不存在则按默认值创建返回）."""
     settings = _get_settings(db, current_user.project_id)
-    return TicketSettingsResponse(
-        project_id=settings.project_id,
-        sla_timeout_minutes=settings.sla_timeout_minutes,
-        auto_archive_hours=settings.auto_archive_hours,
-        auto_archive_enabled=settings.auto_archive_enabled,
-        create_ticket_on_unresolved=settings.create_ticket_on_unresolved,
-        create_ticket_on_handoff=settings.create_ticket_on_handoff,
-        create_ticket_on_negative=settings.create_ticket_on_negative,
-        ignore_ack_words=settings.ignore_ack_words,
-        reminder_enabled=settings.reminder_enabled,
-        reminder_channels=settings.reminder_channels_dict,
-        urgent_notify_all=settings.urgent_notify_all,
-        categories=settings.categories_list,
-        ai_resolve_check_enabled=settings.ai_resolve_check_enabled,
-        auto_resolve_minutes=settings.auto_resolve_minutes,
-        updated_at=settings.updated_at,
-    )
+    return _settings_response(settings)
 
 
 @router.put("/settings", response_model=TicketSettingsResponse)
@@ -342,23 +358,7 @@ async def update_ticket_settings(
         setattr(settings, key, value)
     db.commit()
     db.refresh(settings)
-    return TicketSettingsResponse(
-        project_id=settings.project_id,
-        sla_timeout_minutes=settings.sla_timeout_minutes,
-        auto_archive_hours=settings.auto_archive_hours,
-        auto_archive_enabled=settings.auto_archive_enabled,
-        create_ticket_on_unresolved=settings.create_ticket_on_unresolved,
-        create_ticket_on_handoff=settings.create_ticket_on_handoff,
-        create_ticket_on_negative=settings.create_ticket_on_negative,
-        ignore_ack_words=settings.ignore_ack_words,
-        reminder_enabled=settings.reminder_enabled,
-        reminder_channels=settings.reminder_channels_dict,
-        urgent_notify_all=settings.urgent_notify_all,
-        categories=settings.categories_list,
-        ai_resolve_check_enabled=settings.ai_resolve_check_enabled,
-        auto_resolve_minutes=settings.auto_resolve_minutes,
-        updated_at=settings.updated_at,
-    )
+    return _settings_response(settings)
 
 
 # ---------------------------------------------------------------------------
@@ -436,7 +436,7 @@ async def delete_route(
     route_id: UUID,
     db: Session = Depends(get_db),
     current_user: Staff = Depends(require_permission("tickets:update")),
-) -> None:
+):
     """删除路由（软删除）."""
     route = (
         db.query(TicketRoute)
@@ -490,13 +490,65 @@ async def update_ticket(
     db: Session = Depends(get_db),
     current_user: Staff = Depends(require_permission("tickets:update")),
 ) -> TicketResponse:
-    """修改工单（标题/分类/优先级/负责人）."""
+    """修改工单（标题/描述/分类/优先级/负责人/自定义字段）.
+
+    校验：只允许 form_schema 中 editable=true 的字段；required 字段不可置空。
+    """
     ticket = _get_owned_ticket(db, current_user.project_id, ticket_id)
+    settings = _get_settings(db, current_user.project_id)
+    schema = settings.form_schema_list
+    by_key = {f.get("key"): f for f in schema}
+    form_keys = set(by_key.keys())
+
     fields = update_data.model_dump(exclude_unset=True)
+    custom_fields = fields.pop("custom_fields", None)
+
+    # editable 校验
+    for key in fields:
+        if key == "custom_fields":
+            continue
+        fd = by_key.get(key)
+        if fd is not None and fd.get("editable") is False:
+            raise HTTPException(status_code=400, detail=f"字段「{fd.get('label', key)}」不可编辑")
+        if key in ("visitor_id", "agent_id"):
+            raise HTTPException(status_code=400, detail="该字段不可编辑")
+
+    # required 校验：不可置空
     for key, value in fields.items():
-        setattr(ticket, key, value)
-    db.commit()
-    db.refresh(ticket)
+        if value is None or value == "":
+            fd = by_key.get(key)
+            if fd and fd.get("required"):
+                raise HTTPException(status_code=400, detail=f"字段「{fd.get('label', key)}」为必填，不可置空")
+
+    # 自定义字段：只允许 schema 定义的 key + editable
+    if custom_fields is not None:
+        allowed_custom = {
+            k: f for k, f in by_key.items() if k not in ("title", "description", "category", "priority", "assignee_id", "visitor_id", "group_key")
+        }
+        cleaned = {}
+        for k, v in custom_fields.items():
+            if k not in allowed_custom:
+                raise HTTPException(status_code=400, detail=f"未知自定义字段: {k}")
+            if allowed_custom[k].get("editable") is False:
+                raise HTTPException(status_code=400, detail=f"字段「{allowed_custom[k].get('label', k)}」不可编辑")
+            cleaned[k] = v
+        for k, fd in allowed_custom.items():
+            if fd.get("required") and (cleaned.get(k) is None or cleaned.get(k) == ""):
+                raise HTTPException(status_code=400, detail=f"字段「{fd.get('label', k)}」为必填，不可置空")
+        # 未传的字段保留原值
+        merged = dict(ticket.custom_fields or {})
+        merged.update(cleaned)
+        ticket.custom_fields = merged or None
+
+    changed = False
+    for key, value in fields.items():
+        if getattr(ticket, key, None) != value:
+            setattr(ticket, key, value)
+            changed = True
+
+    if changed:
+        db.commit()
+        db.refresh(ticket)
     return _fill_display_names(db, ticket)
 
 

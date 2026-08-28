@@ -237,6 +237,18 @@ async def _handle_manual_service_request(event: AIServiceEvent, project: Project
             detail="Manual service request reason cannot be empty",
         )
 
+    # 群 chatid：从 session_id ({channel_id}@{channel_type}) 解析；
+    # visitor 频道（{visitor_id}-vtr 结尾）视为个人会话（无群）
+    group_key = None
+    try:
+        session_id_raw = (payload.session_id or "").strip()
+        if session_id_raw and "@" in session_id_raw:
+            channel_id = session_id_raw.split("@", 1)[0].strip()
+            if channel_id and not channel_id.endswith("-vtr"):
+                group_key = channel_id
+    except Exception:  # noqa: BLE001
+        group_key = None
+
     transfer_result = await transfer_to_staff(
         db=db,
         visitor_id=visitor.id,
@@ -250,6 +262,9 @@ async def _handle_manual_service_request(event: AIServiceEvent, project: Project
         exclude_agent=True,
         # manual_service.request implies AI should be disabled
         ai_disabled=True,
+        platform_id=visitor.platform_id,
+        group_key=group_key,
+        visitor_key=visitor.platform_open_id,
     )
 
     if not transfer_result.success:
@@ -258,10 +273,79 @@ async def _handle_manual_service_request(event: AIServiceEvent, project: Project
             detail=f"Failed to transfer visitor to staff: {transfer_result.message}",
         )
 
+    # ============ 路由强绑定：负责客服不可服务 → 建单等待，不排队、不转他人 ============
+    if transfer_result.scope_blocked_staff_id:
+        if _ticket_policy_enabled(db, project.id, "create_ticket_on_handoff"):
+            try:
+                from app.services.ticket_service import create_ticket
+
+                md = payload.metadata or {}
+                ticket_fields = md.get("ticket_fields") or {}
+                if not isinstance(ticket_fields, dict):
+                    ticket_fields = {}
+
+                ticket = create_ticket(
+                    db,
+                    project_id=project.id,
+                    title=f"转人工：{visitor.display_name}",
+                    description=reason,
+                    category="其他",
+                    priority=payload.urgency or "normal",
+                    source="manual_service",
+                    status="pending_human",
+                    visitor_id=visitor.id,
+                    session_id=transfer_result.session.id if transfer_result.session else None,
+                    platform_id=visitor.platform_id,
+                    group_key=group_key,
+                    assignee_id=transfer_result.scope_blocked_staff_id,
+                    ai_fields={
+                        "title": ticket_fields.get("title"),
+                        "description": reason,
+                        "category": ticket_fields.get("category"),
+                        "priority": payload.urgency,
+                        "group_key": group_key,
+                        "custom_fields": ticket_fields.get("custom_fields"),
+                    },
+                    ai_summary={
+                        "scope_blocked": True,
+                        "scope_blocked_reason": transfer_result.scope_blocked_reason,
+                        "scope_blocked_staff_id": str(transfer_result.scope_blocked_staff_id),
+                        "notify": {
+                            "staff_id": str(transfer_result.scope_blocked_staff_id),
+                            "status": "waiting_staff_online",
+                        },
+                    },
+                )
+                logger.info(
+                    "[TICKET] 路由负责客服不可服务建单 %s (staff=%s, reason=%s)",
+                    ticket.number, transfer_result.scope_blocked_staff_id,
+                    transfer_result.scope_blocked_reason,
+                )
+                await _notify_staff_new_ticket(db, project, ticket, visitor)
+            except Exception as e:  # noqa: BLE001
+                logger.error("[TICKET] 路由阻塞建单失败: %s", e)
+        return {
+            "entry_id": None,
+            "status": visitor.service_status,
+            "position": None,
+            "priority": None,
+            "channel_id": None,
+            "channel_type": None,
+            "message": transfer_result.message,
+            "scope_blocked_staff_id": str(transfer_result.scope_blocked_staff_id),
+            "scope_blocked_reason": transfer_result.scope_blocked_reason,
+        }
+
     # ============ H1: 转人工自动建单 (source=manual_service, status=pending_human) ============
     if _ticket_policy_enabled(db, project.id, "create_ticket_on_handoff"):
         try:
             from app.services.ticket_service import create_ticket
+
+            # AI 结构化字段（metadata.ticket_fields 可选：title/category/custom_fields）
+            md = payload.metadata or {}
+            ticket_fields = md.get("ticket_fields") or {}
+            if not isinstance(ticket_fields, dict):
+                ticket_fields = {}
 
             ticket = create_ticket(
                 db,
@@ -275,8 +359,16 @@ async def _handle_manual_service_request(event: AIServiceEvent, project: Project
                 visitor_id=visitor.id,
                 session_id=transfer_result.session.id if transfer_result.session else None,
                 platform_id=visitor.platform_id,
-                group_key=visitor.platform_open_id or None,
+                group_key=group_key,
                 assignee_id=transfer_result.assigned_staff_id,
+                ai_fields={
+                    "title": ticket_fields.get("title"),
+                    "description": reason,
+                    "category": ticket_fields.get("category"),
+                    "priority": payload.urgency,
+                    "group_key": group_key,
+                    "custom_fields": ticket_fields.get("custom_fields"),
+                },
             )
             logger.info(
                 "[TICKET] 转人工自动建单 %s (visitor=%s, staff=%s)",
@@ -335,37 +427,23 @@ def _ticket_policy_enabled(db: Session, project_id: UUID, key: str) -> bool:
 
 # ============ H3: 新工单提醒（路由匹配 → 站内 + 记录企微 userid）============
 async def _notify_staff_new_ticket(db: Session, project: Project, ticket: Any, visitor: Any) -> None:
-    """工单创建后提醒客服：按 api_ticket_routes 匹配（platform_id→group_key 优先级）。
+    """工单创建后提醒客服：按 api_ticket_routes 精确匹配（visitor_key > group_key > platform 优先级）。
 
+    - 路由解析复用 ticket_route_service.resolve_ticket_route（与转人工分配同一套匹配）
     - 站内提醒：WuKongIM 发给路由目标 staff（best-effort，失败不影响主流程）
-    - 记录提醒目标到 ticket.ai_summary.notify（含 wecom_userid，供企微通道接入后推送）
+    - 记录提醒目标到 ticket.ai_summary.notify（含 wecom_userid，供企微应用消息推送）
     """
     try:
-        from app.models import TicketRoute
+        from app.services.ticket_route_service import resolve_ticket_route
 
-        route = None
-        if ticket.platform_id:
-            route = (
-                db.query(TicketRoute)
-                .filter(
-                    TicketRoute.project_id == project.id,
-                    TicketRoute.deleted_at.is_(None),
-                    TicketRoute.platform_id == ticket.platform_id,
-                )
-                .order_by(TicketRoute.priority.desc())
-                .first()
-            )
-        if route is None:
-            route = (
-                db.query(TicketRoute)
-                .filter(
-                    TicketRoute.project_id == project.id,
-                    TicketRoute.deleted_at.is_(None),
-                    TicketRoute.platform_id.is_(None),
-                )
-                .order_by(TicketRoute.priority.desc())
-                .first()
-            )
+        visitor_key = getattr(visitor, "platform_open_id", None) if visitor else None
+        route = resolve_ticket_route(
+            db,
+            project_id=project.id,
+            platform_id=ticket.platform_id,
+            group_key=ticket.group_key,
+            visitor_key=visitor_key,
+        )
         if route is None:
             return
 
@@ -692,7 +770,7 @@ async def _handle_visitor_sentiment_update(event: AIServiceEvent, project: Proje
                 .filter(
                     Ticket.visitor_id == visitor.id,
                     Ticket.status.in_(
-                        ["open", "waiting_customer", "pending_human", "processing"]
+                        ["open", "pending_human", "processing"]
                     ),
                     Ticket.deleted_at.is_(None),
                 )
@@ -700,6 +778,11 @@ async def _handle_visitor_sentiment_update(event: AIServiceEvent, project: Proje
             )
             if not existing_ticket:
                 from app.services.ticket_service import create_ticket
+
+                md = payload.metadata or {}
+                ticket_fields = md.get("ticket_fields") or {}
+                if not isinstance(ticket_fields, dict):
+                    ticket_fields = {}
 
                 ticket = create_ticket(
                     db,
@@ -716,6 +799,14 @@ async def _handle_visitor_sentiment_update(event: AIServiceEvent, project: Proje
                     visitor_id=visitor.id,
                     platform_id=visitor.platform_id,
                     group_key=visitor.platform_open_id or None,
+                    ai_fields={
+                        "title": ticket_fields.get("title"),
+                        "description": ticket_fields.get("description"),
+                        "category": ticket_fields.get("category"),
+                        "priority": "high",
+                        "group_key": visitor.platform_open_id,
+                        "custom_fields": ticket_fields.get("custom_fields"),
+                    },
                 )
                 logger.info("[TICKET] 负面情绪自动建单 %s (visitor=%s)", ticket.number, visitor.id)
                 # H3: 新工单提醒（路由匹配 → 站内）

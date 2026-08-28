@@ -17,10 +17,9 @@ from app.core.database import Base
 
 
 class TicketStatus(str, Enum):
-    """工单状态."""
+    """工单状态 (简化: 无等待客户状态, 人工只操作终态)."""
 
-    OPEN = "open"                 # 问题已记录，AI 处理中/待确认
-    WAITING_CUSTOMER = "waiting_customer"  # 等待客户补充信息
+    OPEN = "open"                 # 问题已记录，待处理
     PENDING_HUMAN = "pending_human"        # 已发起转人工，等待客服接手
     PROCESSING = "processing"     # 客服处理中
     RESOLVED = "resolved"         # 已解决（resolve_type 区分 AI/人工）
@@ -56,10 +55,9 @@ class TicketResolveType(str, Enum):
 
 # 合法状态流转表（API 层校验，非法流转返回 400）
 TICKET_STATUS_TRANSITIONS: Dict[str, Set[str]] = {
-    "open": {"waiting_customer", "pending_human", "processing", "resolved", "closed", "rejected"},
-    "waiting_customer": {"open", "pending_human", "processing", "resolved", "closed", "rejected"},
-    "pending_human": {"open", "waiting_customer", "processing", "resolved", "closed", "rejected"},
-    "processing": {"waiting_customer", "resolved", "closed", "rejected"},
+    "open": {"pending_human", "processing", "resolved", "closed", "rejected"},
+    "pending_human": {"open", "processing", "resolved", "closed", "rejected"},
+    "processing": {"resolved", "closed", "rejected"},
     "resolved": {"open", "closed"},
     "closed": {"open"},
     "rejected": {"open"},
@@ -77,7 +75,7 @@ class Ticket(Base):
     __tablename__ = "api_tickets"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('open', 'waiting_customer', 'pending_human', 'processing', 'resolved', 'closed', 'rejected')",
+            "status IN ('open', 'pending_human', 'processing', 'resolved', 'closed', 'rejected')",
             name="chk_tickets_status",
         ),
         CheckConstraint(
@@ -113,6 +111,9 @@ class Ticket(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False, comment="Original question text from visitor")
     category: Mapped[str] = mapped_column(
         String(50), nullable=False, default="other", comment="客服分类 (configurable list, e.g. K6客服/K8客服/K9客服/其他)"
+    )
+    custom_fields: Mapped[Optional[Dict[str, Any]]] = mapped_column(
+        JSONB, nullable=True, comment="自定义字段值 {field_key: value}，字段定义见 api_ticket_settings.form_schema"
     )
 
     # 关联
@@ -215,6 +216,9 @@ class TicketSettings(Base):
 
     # SLA / 归档
     sla_timeout_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=15)
+    sla_by_priority: Mapped[Optional[Dict[str, Any]]] = mapped_column(
+        JSONB, nullable=True, comment="分级SLA时限(分钟)：{low,normal,high,urgent}，缺省回退 sla_timeout_minutes"
+    )
     auto_archive_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=24)
     auto_archive_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
@@ -223,6 +227,12 @@ class TicketSettings(Base):
     create_ticket_on_handoff: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     create_ticket_on_negative: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     ignore_ack_words: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    # 路由分配（负责范围）
+    scope_degrade_to_same_group: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True,
+        comment="转人工路由客服不可服务时，是否降级给同群其他路由客服（默认开启）",
+    )
 
     # 提醒
     reminder_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -234,6 +244,15 @@ class TicketSettings(Base):
     # 分类体系（可配置客服分类列表）
     categories: Mapped[Optional[list]] = mapped_column(
         JSONB, nullable=True, comment="JSONB: ['K6客服','K8客服','K9客服','其他']"
+    )
+
+    # 表单模板（字段定义/必填/可编辑/自动填写规则）
+    form_schema: Mapped[Optional[list]] = mapped_column(
+        JSONB, nullable=True, comment="工单表单模板：[{key,label,type,required,editable,options,placeholder,auto_fill}]"
+    )
+    # 工单号格式
+    number_format: Mapped[Optional[Dict[str, Any]]] = mapped_column(
+        JSONB, nullable=True, comment="工单号格式：{prefix:'TK-', date:true, seq_digits:4}"
     )
 
     # AI 解决判定
@@ -249,6 +268,49 @@ class TicketSettings(Base):
     @property
     def categories_list(self) -> list:
         return self.categories or ["K6客服", "K8客服", "K9客服", "其他"]
+
+    @property
+    def sla_by_priority_dict(self) -> Dict[str, int]:
+        """分级 SLA（分钟）。缺省：{low:1440, normal:240, high:60, urgent:30}，普通级回退 sla_timeout_minutes。"""
+        base = {
+            "low": 1440,
+            "normal": self.sla_timeout_minutes,
+            "high": 60,
+            "urgent": 30,
+        }
+        if self.sla_by_priority:
+            for k in ("low", "normal", "high", "urgent"):
+                if k in self.sla_by_priority:
+                    base[k] = int(self.sla_by_priority[k])
+        return base
+
+    @property
+    def form_schema_list(self) -> list:
+        """表单模板。缺省返回内置 7 字段（与 create 表单一致）。"""
+        if self.form_schema:
+            return self.form_schema
+        return DEFAULT_TICKET_FORM_SCHEMA
+
+    @property
+    def number_format_dict(self) -> Dict[str, Any]:
+        return self.number_format or {"prefix": "TK-", "date": True, "seq_digits": 4}
+
+
+# 内置表单字段（key 固定，label/required/editable/options 可在设置中调整）
+DEFAULT_TICKET_FORM_SCHEMA: list = [
+    {"key": "title", "label": "标题", "type": "text", "required": True, "editable": True,
+     "placeholder": "问题摘要", "auto_fill": {"source": "ai_fields.title"}},
+    {"key": "description", "label": "问题描述", "type": "textarea", "required": True, "editable": True,
+     "placeholder": "访客问题原文", "auto_fill": {"source": "ai_fields.description"}},
+    {"key": "category", "label": "分类", "type": "select", "required": False, "editable": True,
+     "options": ["K6客服", "K8客服", "K9客服", "其他"], "auto_fill": {"source": "ai_fields.category", "fallback": "其他"}},
+    {"key": "priority", "label": "优先级", "type": "select", "required": False, "editable": True,
+     "options": ["low", "normal", "high", "urgent"], "auto_fill": {"source": "ai_fields.priority", "fallback": "normal"}},
+    {"key": "assignee_id", "label": "负责客服", "type": "staff", "required": False, "editable": True, "options": [], "auto_fill": None},
+    {"key": "visitor_id", "label": "访客", "type": "visitor", "required": False, "editable": False, "options": [], "auto_fill": None},
+    {"key": "group_key", "label": "群标识", "type": "text", "required": False, "editable": True,
+     "options": [], "auto_fill": {"source": "ai_fields.group_key"}},
+]
 
 
 class TicketRoute(Base):

@@ -77,8 +77,11 @@ class Staff(Base):
     role: Mapped[str] = mapped_column(
         String(20),
         nullable=False,
-        default="user",
-        comment="Staff role: user or agent"
+        default=StaffRole.USER.value,
+        comment="Staff role: admin, user, agent",
+    )
+    wecom_userid: Mapped[Optional[str]] = mapped_column(
+        String(128), nullable=True, comment="企微成员 userid（应用消息推送目标）"
     )
     status: Mapped[str] = mapped_column(
         String(20),

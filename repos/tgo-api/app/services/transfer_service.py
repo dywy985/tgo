@@ -29,6 +29,10 @@ from app.models import (
     ChannelMember,
 )
 from app.services.wukongim_client import wukongim_client
+from app.services.ticket_route_service import (
+    resolve_ticket_route,
+    resolve_scope_degrade_candidates,
+)
 from app.utils.encoding import build_visitor_channel_id, build_project_staff_channel_id
 from app.utils.const import CHANNEL_TYPE_CUSTOMER_SERVICE, CHANNEL_TYPE_PROJECT_STAFF, MEMBER_TYPE_STAFF
 
@@ -47,6 +51,9 @@ class TransferResult:
     waiting_queue: Optional[VisitorWaitingQueue]
     queue_position: Optional[int]
     message: str
+    # 路由匹配结果：命中但负责客服不可服务（且无降级）时填充
+    scope_blocked_staff_id: Optional[UUID] = None
+    scope_blocked_reason: Optional[str] = None  # staff_offline / staff_paused / outside_hours / at_capacity
 
 
 @dataclass
@@ -72,6 +79,11 @@ class StaffAssignmentResult:
     candidate_scores: Optional[dict] = None
     model_used: Optional[str] = None
     prompt_used: Optional[str] = None
+    # 路由匹配：命中但负责客服不可服务（且无同群降级）时填充
+    scope_blocked_staff_id: Optional[UUID] = None
+    scope_blocked_reason: Optional[str] = None  # staff_offline / staff_paused / outside_hours / at_capacity
+    # 分配来源：route（路由直配）/ scope_degrade（同群降级）/ normal（通用规则）
+    assignment_source: Optional[str] = None
 
 
 async def transfer_to_staff(
@@ -91,12 +103,19 @@ async def transfer_to_staff(
     add_to_queue_if_no_staff: bool = True,
     send_notification: bool = True,
     exclude_agent: bool = False,
+    group_key: Optional[str] = None,
+    visitor_key: Optional[str] = None,
+    scope_degrade: Optional[bool] = None,
 ) -> TransferResult:
     """
     Transfer a visitor to staff service.
     
     Assignment logic:
     1. If target_staff_id specified, assign directly
+    1.5. NEW: ticket route exact match (visitor/group → designated staff).
+         Hit + serviceable → direct assign (skips LLM/load-balancing).
+         Hit + NOT serviceable → scope_degrade to same-group route staff if enabled;
+         otherwise scope_blocked (no queue, no generic assignment — never assign to wrong staff).
     2. Otherwise, get available staff candidates based on rules
     3. If candidates > 1 and LLM enabled, use LLM to select
     4. If candidates > 1 and LLM disabled, use load balancing
@@ -119,7 +138,11 @@ async def transfer_to_staff(
         ai_disabled: Whether to disable AI responses (None=keep current, True=disable, False=enable)
         add_to_queue_if_no_staff: Whether to add to waiting queue if no staff available (default True)
         send_notification: Whether to send staff assigned system message (default True)
-        
+        exclude_agent: Exclude AI agents (role=agent) from candidates
+        group_key: 群 chatid（路由匹配用）
+        visitor_key: 特定客户 external_userid（路由匹配用）
+        scope_degrade: 路由客服不可服务时是否降级给同群其他路由客服（None=读 settings）
+    
     Returns:
         TransferResult with success status and related objects
     """
@@ -132,6 +155,8 @@ async def transfer_to_staff(
     waiting_queue_entry: Optional[VisitorWaitingQueue] = None
     queue_position: Optional[int] = None
     no_staff_reason: Optional[str] = None
+    scope_blocked_staff_id: Optional[UUID] = None
+    scope_blocked_reason: Optional[str] = None
     
     try:
         # 1. Validate visitor exists and lock the row to prevent deadlocks
@@ -198,6 +223,10 @@ async def transfer_to_staff(
             visitor_message=visitor_message,
             assignment_rule=assignment_rule,
             exclude_agent=exclude_agent,
+            platform_id=platform_id or visitor.platform_id,
+            group_key=group_key,
+            visitor_key=visitor_key,
+            scope_degrade=scope_degrade,
         )
         
         assigned_staff_id = assignment_result.assigned_staff_id
@@ -207,9 +236,12 @@ async def transfer_to_staff(
         candidate_scores = assignment_result.candidate_scores
         model_used = assignment_result.model_used
         prompt_used = assignment_result.prompt_used
+        scope_blocked_staff_id = assignment_result.scope_blocked_staff_id
+        scope_blocked_reason = assignment_result.scope_blocked_reason
         
         # 5. Handle case when no staff is assigned - optionally add to waiting queue
-        if not assigned_staff_id and len(candidate_staff_ids) == 0 and add_to_queue_if_no_staff:
+        #    路由命中但负责客服不可服务（scope_blocked）：不排队、不通用分配（宁缺勿错）
+        if not assigned_staff_id and not scope_blocked_staff_id and len(candidate_staff_ids) == 0 and add_to_queue_if_no_staff:
             waiting_queue_entry, queue_position = await _add_to_waiting_queue(
                 db=db,
                 project_id=project_id,
@@ -292,6 +324,8 @@ async def transfer_to_staff(
         # Determine message based on result
         if assigned_staff_id:
             message = "Transfer successful"
+        elif scope_blocked_staff_id:
+            message = f"Route matched staff {scope_blocked_staff_id} but unavailable ({scope_blocked_reason}); ticket created, no queue"
         elif waiting_queue_entry:
             message = f"Added to waiting queue at position {queue_position}"
         else:
@@ -306,6 +340,8 @@ async def transfer_to_staff(
             waiting_queue=waiting_queue_entry,
             queue_position=queue_position,
             message=message,
+            scope_blocked_staff_id=scope_blocked_staff_id,
+            scope_blocked_reason=scope_blocked_reason,
         )
         
     except Exception as e:
@@ -331,11 +367,18 @@ async def assign_staff(
     visitor_message: Optional[str] = None,
     assignment_rule: Optional[VisitorAssignmentRule] = None,
     exclude_agent: bool = False,
+    platform_id: Optional[UUID] = None,
+    group_key: Optional[str] = None,
+    visitor_key: Optional[str] = None,
+    scope_degrade: Optional[bool] = None,
 ) -> StaffAssignmentResult:
     """
     Assign a staff member to handle a visitor.
     
     Assignment logic:
+    0.5. NEW: ticket route exact match (visitor/group → designated staff)
+         Hit + serviceable → direct assign, skip generic rules
+         Hit + NOT serviceable → same-group degrade if enabled, else scope_blocked
     1. If target_staff_id specified, assign directly
     2. Otherwise, get available staff candidates based on rules
     3. Prioritize last serving staff if available
@@ -351,6 +394,11 @@ async def assign_staff(
         target_staff_id: Specific staff to assign (optional)
         visitor_message: Message that triggered the transfer (for LLM context)
         assignment_rule: Assignment rule for the project (optional)
+        exclude_agent: Exclude AI agents (role=agent) from candidates
+        platform_id: 渠道平台 ID（路由匹配）
+        group_key: 群 chatid（路由匹配）
+        visitor_key: 特定客户 external_userid（路由匹配）
+        scope_degrade: 路由客服不可服务时是否降级同群（None=读 settings）
         
     Returns:
         StaffAssignmentResult with assigned_staff_id and candidate info
@@ -362,6 +410,9 @@ async def assign_staff(
     candidate_scores: Optional[dict] = None
     model_used: Optional[str] = None
     prompt_used: Optional[str] = None
+    scope_blocked_staff_id: Optional[UUID] = None
+    scope_blocked_reason: Optional[str] = None
+    assignment_source: Optional[str] = None
     
     # Get visitor for LLM context
     visitor = db.query(Visitor).filter(
@@ -381,10 +432,92 @@ async def assign_staff(
         if staff:
             assigned_staff_id = target_staff_id
             candidate_staff_ids = [target_staff_id]
+            assignment_source = "direct"
             logger.info(f"Direct assignment to staff {target_staff_id}")
         else:
             logger.warning(f"Target staff {target_staff_id} not found, will try auto-assignment")
-    
+
+    # NEW 0.5: ticket route exact match (visitor/group → designated staff)
+    # 命中且可服务 → 直接分配（跳过 LLM/负载均衡/上次服务）
+    # 命中但不可服务 → 同群降级（开关开启时）；否则 scope_blocked（不排队、不通用分配）
+    if not assigned_staff_id:
+        # scope_degrade 开关：显式传值 > settings > 默认 True
+        degrade_flag = scope_degrade
+        if degrade_flag is None:
+            try:
+                from app.models import TicketSettings
+
+                st = (
+                    db.query(TicketSettings)
+                    .filter(TicketSettings.project_id == project_id)
+                    .first()
+                )
+                degrade_flag = bool(st.scope_degrade_to_same_group) if st else True
+            except Exception:
+                degrade_flag = True
+
+        route = resolve_ticket_route(
+            db,
+            project_id=project_id,
+            platform_id=platform_id,
+            group_key=group_key,
+            visitor_key=visitor_key,
+        )
+        if route and route.staff_id:
+            route_staff = (
+                db.query(Staff)
+                .filter(
+                    Staff.id == route.staff_id,
+                    Staff.project_id == project_id,
+                    Staff.deleted_at.is_(None),
+                )
+                .first()
+            )
+            serviceable, block_reason = _staff_serviceable(db, route_staff, assignment_rule)
+            if serviceable:
+                assigned_staff_id = route.staff_id
+                candidate_staff_ids = [route.staff_id]
+                assignment_source = "route"
+                logger.info(
+                    "[ROUTE] 路由直配 staff=%s (platform=%s group=%s visitor=%s)",
+                    route.staff_id, platform_id, group_key, visitor_key,
+                )
+            else:
+                # 负责客服不可服务：先尝试同群降级
+                degraded_id = None
+                if degrade_flag:
+                    degraded_id = await _try_scope_degrade(
+                        db,
+                        project_id=project_id,
+                        platform_id=platform_id,
+                        group_key=group_key,
+                        exclude_staff_id=route.staff_id,
+                        assignment_rule=assignment_rule,
+                    )
+                if degraded_id:
+                    assigned_staff_id = degraded_id
+                    candidate_staff_ids = [degraded_id]
+                    assignment_source = "scope_degrade"
+                    logger.info(
+                        "[ROUTE] 同群降级 -> staff=%s (原负责 %s 不可服务: %s)",
+                        degraded_id, route.staff_id, block_reason,
+                    )
+                else:
+                    # 强绑定：路由命中但负责客服不可服务 → 不分配、不排队（宁缺勿错）
+                    scope_blocked_staff_id = route.staff_id
+                    scope_blocked_reason = block_reason
+                    logger.warning(
+                        "[ROUTE] 路由命中但负责客服不可服务且无降级: staff=%s reason=%s -> scope_blocked",
+                        route.staff_id, block_reason,
+                    )
+                    return StaffAssignmentResult(
+                        assigned_staff_id=None,
+                        candidate_staff_ids=[],
+                        scope_blocked_staff_id=route.staff_id,
+                        scope_blocked_reason=block_reason,
+                        assignment_source="route_blocked",
+                    )
+
     # Auto-assignment if no target specified or target not found
     if not assigned_staff_id:
         # Get assignment rule if not provided
@@ -470,6 +603,9 @@ async def assign_staff(
         candidate_scores=candidate_scores,
         model_used=model_used,
         prompt_used=prompt_used,
+        scope_blocked_staff_id=scope_blocked_staff_id,
+        scope_blocked_reason=scope_blocked_reason,
+        assignment_source=assignment_source or "normal",
     )
 
 
@@ -842,6 +978,67 @@ def is_within_service_hours(assignment_rule: Optional[VisitorAssignmentRule]) ->
             return True
     
     return True
+
+
+def _staff_serviceable(
+    db: Session,
+    staff: Optional[Staff],
+    assignment_rule: Optional[VisitorAssignmentRule],
+) -> tuple[bool, Optional[str]]:
+    """检查单个客服是否可服务。返回 (是否可服务, 不可服务原因)。"""
+    if staff is None or not staff.is_active:
+        return False, "staff_offline"
+    if staff.service_paused:
+        return False, "staff_paused"
+    if not is_within_service_hours(assignment_rule):
+        return False, "outside_hours"
+    max_concurrent = assignment_rule.max_concurrent_chats if assignment_rule else None
+    if max_concurrent:
+        count = (
+            db.query(func.count(VisitorSession.id))
+            .filter(
+                VisitorSession.staff_id == staff.id,
+                VisitorSession.status == SessionStatus.OPEN.value,
+            )
+            .scalar()
+            or 0
+        )
+        if count >= max_concurrent:
+            return False, "at_capacity"
+    return True, None
+
+
+async def _try_scope_degrade(
+    db: Session,
+    *,
+    project_id: UUID,
+    platform_id: Optional[UUID],
+    group_key: Optional[str],
+    exclude_staff_id: UUID,
+    assignment_rule: Optional[VisitorAssignmentRule],
+) -> Optional[UUID]:
+    """同群降级：路由客服不可服务时，找同群其他路由客服（按 priority 降序）第一个可服务的。"""
+    candidates = resolve_scope_degrade_candidates(
+        db,
+        project_id=project_id,
+        platform_id=platform_id,
+        group_key=group_key,
+        exclude_staff_id=exclude_staff_id,
+    )
+    for route in candidates:
+        staff = (
+            db.query(Staff)
+            .filter(
+                Staff.id == route.staff_id,
+                Staff.project_id == project_id,
+                Staff.deleted_at.is_(None),
+            )
+            .first()
+        )
+        serviceable, _ = _staff_serviceable(db, staff, assignment_rule)
+        if serviceable:
+            return route.staff_id
+    return None
 
 
 async def _get_available_staff_candidates(
