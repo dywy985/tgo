@@ -150,6 +150,7 @@ class StaffResponse(BaseSchema):
     status: StaffStatus = Field(..., description="Staff status")
     is_active: bool = Field(..., description="Whether staff is active for service (long-term switch)")
     service_paused: bool = Field(..., description="Whether staff has temporarily paused accepting new visitors (short-term switch)")
+    wecom_userid: Optional[str] = Field(None, max_length=128, description="企微成员 userid（应用消息推送目标）")
     is_working: Optional[bool] = Field(
         None, 
         description="Whether staff is currently within service hours (computed field based on VisitorAssignmentRule)"

@@ -399,23 +399,25 @@ async def list_route_groups(
     groups: dict[str, str] = {}
 
     # 1) pt_wecom_inbox：同库部署时聚合（含群名）
+    #    群 chatid/群名 存于 raw_payload JSONB（chat_id/conv_name），时间列 received_at
     try:
         from sqlalchemy import text
 
         rows = db.execute(
             text(
-                "SELECT DISTINCT ON (chat_id) chat_id, "
+                "SELECT DISTINCT ON ((raw_payload->>'chat_id')) raw_payload->>'chat_id' AS chat_id, "
                 " COALESCE(raw_payload->>'conv_name', '') AS conv_name "
                 "FROM pt_wecom_inbox "
-                "WHERE chat_id IS NOT NULL AND chat_id <> '' "
-                "ORDER BY chat_id, created_at DESC"
+                "WHERE raw_payload->>'chat_id' IS NOT NULL AND raw_payload->>'chat_id' <> '' "
+                "ORDER BY raw_payload->>'chat_id', received_at DESC"
             )
         ).all()
         for row in rows:
             chat_id = (row[0] or "").strip()
             if chat_id:
                 groups[chat_id] = (row[1] or "").strip() or ""
-    except Exception as e:  # noqa: BLE001 - 表不存在/不同库：忽略该来源
+    except Exception as e:  # noqa: BLE001 - 表不存在/不同库：忽略该来源（需 rollback 恢复事务）
+        db.rollback()
         logger.debug(f"[ROUTE] pt_wecom_inbox 聚合失败(忽略): {e}")
 
     # 2) api_ticket_routes.group_key
