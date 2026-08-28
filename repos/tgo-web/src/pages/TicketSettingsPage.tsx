@@ -5,28 +5,8 @@ import {
   ticketsApiService,
   type TicketFormField,
   type TicketFormFieldType,
-  type TicketRoute,
   type TicketSettings,
 } from '@/services/ticketsApi';
-import { visitorApiService, type VisitorResponse } from '@/services/visitorApi';
-
-interface RouteFormState {
-  group_key: string;
-  visitor_key: string;
-  visitor_name: string;
-  staff_name: string;
-  wecom_userid: string;
-  priority: number;
-}
-
-const EMPTY_ROUTE_FORM: RouteFormState = {
-  group_key: '',
-  visitor_key: '',
-  visitor_name: '',
-  staff_name: '',
-  wecom_userid: '',
-  priority: 10,
-};
 
 const BUILTIN_FIELD_KEYS = ['title', 'description', 'category', 'priority', 'assignee_id', 'visitor_id', 'group_key'];
 
@@ -68,7 +48,6 @@ const TicketSettingsPage: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [savedMsg, setSavedMsg] = useState('');
   const [categoriesText, setCategoriesText] = useState('');
-
   // 表单模板（本地编辑）
   const [formSchema, setFormSchema] = useState<TicketFormField[]>([]);
   // 分级 SLA（本地编辑）
@@ -85,13 +64,6 @@ const TicketSettingsPage: React.FC = () => {
     seq_digits: 4,
   });
 
-  const [routes, setRoutes] = useState<TicketRoute[]>([]);
-  const [routeForm, setRouteForm] = useState<RouteFormState>(EMPTY_ROUTE_FORM);
-  const [routeError, setRouteError] = useState('');
-  const [routeSaving, setRouteSaving] = useState(false);
-  const [visitorResults, setVisitorResults] = useState<VisitorResponse[]>([]);
-  const [visitorSearching, setVisitorSearching] = useState(false);
-
   const loadSettings = useCallback(async () => {
     try {
       const s = await ticketsApiService.getSettings();
@@ -105,18 +77,9 @@ const TicketSettingsPage: React.FC = () => {
     }
   }, []);
 
-  const loadRoutes = useCallback(async () => {
-    try {
-      setRoutes(await ticketsApiService.listRoutes());
-    } catch {
-      /* 忽略 */
-    }
-  }, []);
-
   useEffect(() => {
     loadSettings();
-    loadRoutes();
-  }, [loadSettings, loadRoutes]);
+  }, [loadSettings]);
 
   const set = <K extends keyof TicketSettings>(key: K, value: TicketSettings[K]) => {
     setSettings((prev) => (prev ? { ...prev, [key]: value } : prev));
@@ -188,66 +151,6 @@ const TicketSettingsPage: React.FC = () => {
     }
   };
 
-  const handleAddRoute = async () => {
-    setRouteError('');
-    if (!routeForm.staff_name.trim()) {
-      setRouteError('请填写客服姓名');
-      return;
-    }
-    setRouteSaving(true);
-    try {
-      await ticketsApiService.createRoute({
-        group_key: routeForm.group_key.trim() || undefined,
-        visitor_key: routeForm.visitor_key.trim() || undefined,
-        staff_name: routeForm.staff_name.trim(),
-        wecom_userid: routeForm.wecom_userid.trim() || undefined,
-        priority: routeForm.priority,
-      });
-      setRouteForm(EMPTY_ROUTE_FORM);
-      setVisitorResults([]);
-      loadRoutes();
-    } catch (err) {
-      setRouteError(err instanceof Error ? err.message : '添加失败');
-    } finally {
-      setRouteSaving(false);
-    }
-  };
-
-  const handleSearchVisitors = async (kw: string) => {
-    if (!kw.trim()) {
-      setVisitorResults([]);
-      return;
-    }
-    setVisitorSearching(true);
-    try {
-      const resp = await visitorApiService.listVisitors({ search: kw.trim(), limit: 8 });
-      setVisitorResults(resp.data || []);
-    } catch {
-      setVisitorResults([]);
-    } finally {
-      setVisitorSearching(false);
-    }
-  };
-
-  const handlePickVisitor = (v: VisitorResponse) => {
-    setRouteForm((prev) => ({
-      ...prev,
-      visitor_key: v.platform_open_id || '',
-      visitor_name: v.nickname || v.display_nickname || v.name || v.platform_open_id || '',
-    }));
-    setVisitorResults([]);
-  };
-
-  const handleDeleteRoute = async (route: TicketRoute) => {
-    if (!window.confirm(`确认删除路由：${route.staff_name}${route.group_key ? `（${route.group_key}）` : '（默认）'}？`)) return;
-    try {
-      await ticketsApiService.deleteRoute(route.id);
-      loadRoutes();
-    } catch (err) {
-      setRouteError(err instanceof Error ? err.message : '删除失败');
-    }
-  };
-
   const inputCls =
     'px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 w-full';
   const labelCls = 'block text-xs text-gray-500 dark:text-gray-400 mb-1';
@@ -264,7 +167,7 @@ const TicketSettingsPage: React.FC = () => {
             <h1 className="text-lg font-bold text-gray-900 dark:text-gray-100">
               {t('ticket.settings.title', '工单设置')}
             </h1>
-            <p className="text-xs text-gray-500 dark:text-gray-400">SLA / 建单策略 / 提醒 / 分类 / 客服路由</p>
+            <p className="text-xs text-gray-500 dark:text-gray-400">SLA / 建单策略 / 提醒 / 分类</p>
           </div>
         </div>
 
@@ -568,136 +471,6 @@ const TicketSettingsPage: React.FC = () => {
               );
             })}
           </div>
-        </div>
-
-        {/* 客服路由 */}
-        <div className={sectionCls}>
-          <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-1">客服路由（客户/群 → 客服个人）</h2>
-          <p className="text-xs text-gray-400 mb-4">
-            工单产生与转人工时按「特定客户 &gt; 群 &gt; 平台默认」匹配负责客服：命中且客服在线 → 直接分配；客服不在线 → 记录工单等待，其上线后提醒。群标识留空 = 该平台/项目默认路由。
-          </p>
-
-          <div className="grid grid-cols-1 md:grid-cols-6 gap-3 mb-3">
-            <div className="md:col-span-2">
-              <label className={labelCls}>特定客户（访客选择或手填 external_userid）</label>
-              <input
-                value={routeForm.visitor_key}
-                onChange={(e) => {
-                  setRouteForm({ ...routeForm, visitor_key: e.target.value, visitor_name: '' });
-                  handleSearchVisitors(e.target.value);
-                }}
-                placeholder="留空=群/默认匹配"
-                className={inputCls}
-              />
-              {routeForm.visitor_name && (
-                <p className="text-[11px] text-blue-600 dark:text-blue-400 mt-0.5">已选访客：{routeForm.visitor_name}</p>
-              )}
-              {visitorResults.length > 0 && (
-                <ul className="mt-1 max-h-36 overflow-y-auto border border-gray-200 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-xs shadow">
-                  {visitorResults.map((v) => (
-                    <li key={v.id}>
-                      <button
-                        type="button"
-                        onClick={() => handlePickVisitor(v)}
-                        className="w-full text-left px-2 py-1.5 hover:bg-blue-50 dark:hover:bg-gray-700 flex justify-between gap-2"
-                      >
-                        <span className="truncate">{v.nickname || v.display_nickname || v.name || '未命名访客'}</span>
-                        <span className="font-mono text-gray-400 truncate">{v.platform_open_id}</span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {visitorSearching && <p className="text-[11px] text-gray-400 mt-0.5">搜索中…</p>}
-            </div>
-            <div>
-              <label className={labelCls}>群标识（chatid）</label>
-              <input
-                value={routeForm.group_key}
-                onChange={(e) => setRouteForm({ ...routeForm, group_key: e.target.value })}
-                placeholder="留空=默认"
-                className={inputCls}
-              />
-            </div>
-            <div>
-              <label className={labelCls}>客服姓名</label>
-              <input
-                value={routeForm.staff_name}
-                onChange={(e) => setRouteForm({ ...routeForm, staff_name: e.target.value })}
-                className={inputCls}
-              />
-            </div>
-            <div>
-              <label className={labelCls}>企微 userid</label>
-              <input
-                value={routeForm.wecom_userid}
-                onChange={(e) => setRouteForm({ ...routeForm, wecom_userid: e.target.value })}
-                className={inputCls}
-              />
-            </div>
-            <div>
-              <label className={labelCls}>优先级</label>
-              <input
-                type="number"
-                min={1}
-                max={100}
-                value={routeForm.priority}
-                onChange={(e) => setRouteForm({ ...routeForm, priority: Number(e.target.value) })}
-                className={inputCls}
-              />
-            </div>
-            <div className="flex items-end">
-              <button
-                onClick={handleAddRoute}
-                disabled={routeSaving}
-                className="px-4 py-1.5 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg w-full disabled:opacity-50"
-              >
-                添加路由
-              </button>
-            </div>
-          </div>
-
-          {routeError && <p className="text-xs text-red-500 mb-2">{routeError}</p>}
-
-          <table className="w-full text-sm">
-            <thead className="text-gray-400 text-xs uppercase tracking-wider">
-              <tr>
-                <th className="text-left py-2 font-semibold">匹配范围</th>
-                <th className="text-left py-2 font-semibold">客服</th>
-                <th className="text-left py-2 font-semibold">企微 userid</th>
-                <th className="text-left py-2 font-semibold">优先级</th>
-                <th className="text-right py-2 font-semibold">操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {routes.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="py-6 text-center text-gray-400 text-xs">
-                    暂无路由，请添加（工单将归属"未分配"）
-                  </td>
-                </tr>
-              ) : (
-                routes.map((r) => (
-                  <tr key={r.id} className="border-t border-gray-100 dark:border-gray-700">
-                    <td className="py-2 font-mono text-xs text-gray-500">
-                      {r.visitor_key ? `客户:${r.visitor_key}` : r.group_key ? `群:${r.group_key}` : '（默认）'}
-                    </td>
-                    <td className="py-2 text-gray-800 dark:text-gray-200">{r.staff_name}</td>
-                    <td className="py-2 font-mono text-xs text-gray-500">{r.wecom_userid || '—'}</td>
-                    <td className="py-2 text-gray-600 dark:text-gray-400">{r.priority}</td>
-                    <td className="py-2 text-right">
-                      <button
-                        onClick={() => handleDeleteRoute(r)}
-                        className="text-xs text-red-500 hover:text-red-600"
-                      >
-                        删除
-                      </button>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
         </div>
 
         {/* 保存 */}

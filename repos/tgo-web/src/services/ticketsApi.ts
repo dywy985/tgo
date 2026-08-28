@@ -11,7 +11,6 @@ import { BaseApiService } from './base/BaseApiService';
 
 export type TicketStatus =
   | 'open'
-  | 'waiting_customer'
   | 'pending_human'
   | 'processing'
   | 'resolved'
@@ -28,6 +27,20 @@ export interface TicketSummary {
   sentiment?: string;
   message_ids?: string[];
   question_type?: string;
+  autofill?: Record<string, { source: string; value: unknown }>;
+}
+
+export type TicketFormFieldType = 'text' | 'textarea' | 'select' | 'multi_select' | 'number' | 'date' | 'staff' | 'visitor' | 'boolean';
+
+export interface TicketFormField {
+  key: string;
+  label: string;
+  type: TicketFormFieldType;
+  required?: boolean;
+  editable?: boolean;
+  options?: string[];
+  placeholder?: string;
+  auto_fill?: { source?: string; fallback?: string } | null;
 }
 
 export interface Ticket {
@@ -48,6 +61,7 @@ export interface Ticket {
   source: TicketSource;
   resolve_type?: string | null;
   ai_summary?: TicketSummary | null;
+  custom_fields?: Record<string, unknown> | null;
   first_response_at?: string | null;
   resolved_at?: string | null;
   closed_at?: string | null;
@@ -94,6 +108,7 @@ export interface TicketHistory {
 export interface TicketSettings {
   project_id: string;
   sla_timeout_minutes: number;
+  sla_by_priority: Record<'low' | 'normal' | 'high' | 'urgent', number>;
   auto_archive_hours: number;
   auto_archive_enabled: boolean;
   create_ticket_on_unresolved: boolean;
@@ -104,6 +119,8 @@ export interface TicketSettings {
   reminder_channels: Record<string, boolean>;
   urgent_notify_all: boolean;
   categories: string[];
+  form_schema: TicketFormField[];
+  number_format: { prefix: string; date: boolean; seq_digits: number };
   ai_resolve_check_enabled: boolean;
   auto_resolve_minutes: number;
   updated_at?: string | null;
@@ -196,6 +213,37 @@ class TicketsApiServiceClass extends BaseApiService {
     return this.patch<Ticket>(this.endpoints.TICKET(id), data);
   }
 
+  async createTicketWithFields(data: {
+    title: string;
+    description: string;
+    category?: string;
+    priority?: string;
+    source?: string;
+    visitor_id?: string | null;
+    session_id?: string | null;
+    platform_id?: string | null;
+    group_key?: string | null;
+    assignee_id?: string | null;
+    custom_fields?: Record<string, unknown>;
+  }): Promise<Ticket> {
+    return this.post<Ticket>(this.endpoints.TICKETS, data);
+  }
+
+  async updateTicketFields(
+    id: string,
+    data: {
+      title?: string;
+      description?: string;
+      category?: string;
+      priority?: string;
+      assignee_id?: string | null;
+      group_key?: string;
+      custom_fields?: Record<string, unknown>;
+    }
+  ): Promise<Ticket> {
+    return this.patch<Ticket>(this.endpoints.TICKET(id), data);
+  }
+
   async assignTicket(id: string, staffId: string | null): Promise<Ticket> {
     return this.post<Ticket>(this.endpoints.TICKET_ASSIGN(id), { staff_id: staffId });
   }
@@ -240,6 +288,12 @@ class TicketsApiServiceClass extends BaseApiService {
     return this.get<TicketRoute[]>(this.endpoints.TICKET_ROUTES);
   }
 
+  async listRouteGroups(): Promise<Array<{ group_key: string; group_name: string }>> {
+    return this.get<Array<{ group_key: string; group_name: string }>>(
+      `${this.endpoints.TICKET_ROUTES}/groups`,
+    );
+  }
+
   async createRoute(data: Partial<TicketRoute>): Promise<TicketRoute> {
     return this.post<TicketRoute>(this.endpoints.TICKET_ROUTES, data);
   }
@@ -258,7 +312,6 @@ export const ticketsApiService = new TicketsApiServiceClass();
 // 状态/优先级展示映射
 export const TICKET_STATUS_LABELS: Record<TicketStatus, string> = {
   open: '未处理',
-  waiting_customer: '等客户',
   pending_human: '待人工',
   processing: '处理中',
   resolved: '已解决',
@@ -268,7 +321,6 @@ export const TICKET_STATUS_LABELS: Record<TicketStatus, string> = {
 
 export const TICKET_STATUS_COLORS: Record<TicketStatus, string> = {
   open: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400',
-  waiting_customer: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400',
   pending_human: 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-400',
   processing: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-400',
   resolved: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400',

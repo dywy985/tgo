@@ -31,6 +31,8 @@ import { StaffResponse, StaffCreateRequest } from '@/services/api';
 import { useToast } from '@/hooks/useToast';
 import AIProvidersApiService from '@/services/aiProvidersApi';
 import Toggle from '@/components/ui/Toggle';
+import { ticketsApiService, type TicketRoute } from '@/services/ticketsApi';
+import { visitorApiService, type VisitorResponse } from '@/services/visitorApi';
 
 // Role configuration for display (colors only, labels from i18n)
 const roleStyleConfig: Record<StaffRole, { bgColor: string; textColor: string }> = {
@@ -532,6 +534,121 @@ const StaffSettings: React.FC = () => {
   const [llmOptions, setLlmOptions] = useState<Array<{ value: string; label: string }>>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
 
+  // ---- 客服负责范围（路由） ----
+  const [routes, setRoutes] = useState<TicketRoute[]>([]);
+  const [groupOptions, setGroupOptions] = useState<Array<{ group_key: string; group_name: string }>>([]);
+  const [routeGroupManual, setRouteGroupManual] = useState(false); // 群标识：下拉 vs 手填
+  const [routeForm, setRouteForm] = useState({
+    visitor_key: '',
+    visitor_name: '',
+    group_key: '',
+    staff_id: '',
+    staff_name: '',
+    wecom_userid: '',
+    priority: 10,
+  });
+  const [visitorResults, setVisitorResults] = useState<VisitorResponse[]>([]);
+  const [visitorSearching, setVisitorSearching] = useState(false);
+  const [routesLoading, setRoutesLoading] = useState(false);
+  const [routeSaving, setRouteSaving] = useState(false);
+
+  const fetchRoutes = useCallback(async () => {
+    setRoutesLoading(true);
+    try {
+      setRoutes(await ticketsApiService.listRoutes());
+    } catch {
+      /* 忽略 */
+    } finally {
+      setRoutesLoading(false);
+    }
+  }, []);
+
+  const fetchGroupOptions = useCallback(async () => {
+    try {
+      setGroupOptions(await ticketsApiService.listRouteGroups());
+    } catch {
+      /* 忽略：下拉为空时退回手填 */
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchRoutes();
+    fetchGroupOptions();
+  }, [fetchRoutes, fetchGroupOptions]);
+
+  const handleRouteStaffChange = (staffId: string) => {
+    const staff = staffList.find((s) => s.id === staffId);
+    setRouteForm((prev) => ({
+      ...prev,
+      staff_id: staffId,
+      staff_name: staff?.nickname || staff?.username || '',
+      wecom_userid: staff?.wecom_userid || '',
+    }));
+  };
+
+  const handleRouteSearchVisitors = async (kw: string) => {
+    if (!kw.trim()) {
+      setVisitorResults([]);
+      return;
+    }
+    setVisitorSearching(true);
+    try {
+      const resp = await visitorApiService.listVisitors({ search: kw.trim(), limit: 8 });
+      setVisitorResults(resp.data || []);
+    } catch {
+      setVisitorResults([]);
+    } finally {
+      setVisitorSearching(false);
+    }
+  };
+
+  const handleRoutePickVisitor = (v: VisitorResponse) => {
+    setRouteForm((prev) => ({
+      ...prev,
+      visitor_key: v.platform_open_id || '',
+      visitor_name: v.nickname || v.display_nickname || v.name || v.platform_open_id || '',
+    }));
+    setVisitorResults([]);
+  };
+
+  const handleAddRoute = async () => {
+    if (!routeForm.staff_name.trim()) {
+      showError('请选择客服');
+      return;
+    }
+    setRouteSaving(true);
+    try {
+      await ticketsApiService.createRoute({
+        group_key: routeForm.group_key.trim() || undefined,
+        visitor_key: routeForm.visitor_key.trim() || undefined,
+        staff_id: routeForm.staff_id || undefined,
+        staff_name: routeForm.staff_name.trim(),
+        wecom_userid: routeForm.wecom_userid.trim() || undefined,
+        priority: routeForm.priority,
+      });
+      setRouteForm({ visitor_key: '', visitor_name: '', group_key: '', staff_id: '', staff_name: '', wecom_userid: '', priority: 10 });
+      setVisitorResults([]);
+      fetchRoutes();
+      fetchGroupOptions();
+      showSuccess('路由已添加');
+    } catch (err) {
+      showError(err instanceof Error ? err.message : '添加失败');
+    } finally {
+      setRouteSaving(false);
+    }
+  };
+
+  const handleDeleteRoute = async (route: TicketRoute) => {
+    if (!window.confirm(`确认删除路由：${route.staff_name}${route.group_key ? `（${route.group_key}）` : '（默认）'}？`)) return;
+    try {
+      await ticketsApiService.deleteRoute(route.id);
+      fetchRoutes();
+      showSuccess('路由已删除');
+    } catch (err) {
+      showError(err instanceof Error ? err.message : '删除失败');
+    }
+  };
+
   // Fetch chat models from providers
   useEffect(() => {
     let cancelled = false;
@@ -805,6 +922,178 @@ const StaffSettings: React.FC = () => {
               </div>
             ) : (
               <div className="space-y-6 mt-4">
+                {/* 客服负责范围（路由） */}
+                <div className="p-4 bg-gray-50 dark:bg-gray-900/50 rounded-lg border border-gray-200 dark:border-gray-700">
+                  <div className="flex items-center gap-2 mb-1">
+                    <MessageSquare className="w-5 h-5 text-gray-600 dark:text-gray-400" />
+                    <h3 className="font-medium text-gray-800 dark:text-gray-200">
+                      客服负责范围（客户/群 → 客服）
+                    </h3>
+                  </div>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+                    转人工/工单按「特定客户 &gt; 群 &gt; 默认」匹配负责客服：命中且客服在线 → 直接分配；不在线 → 记录工单等待，其上线后提醒。
+                  </p>
+
+                  {/* 添加路由 */}
+                  <div className="grid grid-cols-1 md:grid-cols-12 gap-2 mb-3">
+                    <div className="md:col-span-3">
+                      <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">特定客户（可选）</label>
+                      <input
+                        value={routeForm.visitor_key}
+                        onChange={(e) => {
+                          setRouteForm({ ...routeForm, visitor_key: e.target.value, visitor_name: '' });
+                          handleRouteSearchVisitors(e.target.value);
+                        }}
+                        placeholder="访客选择或手填 external_userid"
+                        className="w-full px-2 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200"
+                      />
+                      {routeForm.visitor_name && (
+                        <p className="text-[11px] text-blue-600 dark:text-blue-400 mt-0.5">已选：{routeForm.visitor_name}</p>
+                      )}
+                      {visitorResults.length > 0 && (
+                        <ul className="mt-1 max-h-28 overflow-y-auto border border-gray-200 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-xs shadow">
+                          {visitorResults.map((v) => (
+                            <li key={v.id}>
+                              <button
+                                type="button"
+                                onClick={() => handleRoutePickVisitor(v)}
+                                className="w-full text-left px-2 py-1 hover:bg-blue-50 dark:hover:bg-gray-700 flex justify-between gap-2"
+                              >
+                                <span className="truncate">{v.nickname || v.display_nickname || v.name || '未命名访客'}</span>
+                                <span className="font-mono text-gray-400 truncate">{v.platform_open_id}</span>
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      {visitorSearching && <p className="text-[11px] text-gray-400 mt-0.5">搜索中…</p>}
+                    </div>
+
+                    <div className="md:col-span-3">
+                      <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
+                        群标识（chatid）
+                        <button
+                          type="button"
+                          onClick={() => setRouteGroupManual(!routeGroupManual)}
+                          className="ml-1 text-blue-600 dark:text-blue-400 hover:underline"
+                        >
+                          {routeGroupManual ? '改用列表选择' : '手填'}
+                        </button>
+                      </label>
+                      {routeGroupManual ? (
+                        <input
+                          value={routeForm.group_key}
+                          onChange={(e) => setRouteForm({ ...routeForm, group_key: e.target.value })}
+                          placeholder="群 chatid"
+                          className="w-full px-2 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200"
+                        />
+                      ) : (
+                        <select
+                          value={routeForm.group_key}
+                          onChange={(e) => setRouteForm({ ...routeForm, group_key: e.target.value })}
+                          className="w-full px-2 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200"
+                        >
+                          <option value="">留空=默认路由</option>
+                          {groupOptions.map((g) => (
+                            <option key={g.group_key} value={g.group_key}>
+                              {g.group_name ? `${g.group_name}（${g.group_key.slice(0, 12)}…）` : g.group_key}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                      {!routeGroupManual && groupOptions.length === 0 && (
+                        <p className="text-[11px] text-gray-400 mt-0.5">暂无已知群，可点「手填」输入</p>
+                      )}
+                    </div>
+
+                    <div className="md:col-span-3">
+                      <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">客服</label>
+                      <select
+                        value={routeForm.staff_id}
+                        onChange={(e) => handleRouteStaffChange(e.target.value)}
+                        className="w-full px-2 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200"
+                      >
+                        <option value="">选择负责客服</option>
+                        {staffList
+                          .filter((s) => s.role === 'user')
+                          .map((s) => (
+                            <option key={s.id} value={s.id}>
+                              {s.nickname || s.username}
+                            </option>
+                          ))}
+                      </select>
+                      <p className="text-[11px] text-gray-400 mt-0.5">
+                        {routeForm.wecom_userid ? `企微 userid：${routeForm.wecom_userid}` : '（该客服未配置企微 userid，上线提醒仅站内）'}
+                      </p>
+                    </div>
+
+                    <div className="md:col-span-2">
+                      <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">优先级</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={100}
+                        value={routeForm.priority}
+                        onChange={(e) => setRouteForm({ ...routeForm, priority: Number(e.target.value) })}
+                        className="w-full px-2 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200"
+                      />
+                    </div>
+
+                    <div className="md:col-span-1 flex items-end">
+                      <button
+                        type="button"
+                        onClick={handleAddRoute}
+                        disabled={routeSaving}
+                        className="w-full px-3 py-1.5 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg disabled:opacity-50"
+                      >
+                        {routeSaving ? '添加中…' : '添加'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* 路由列表 */}
+                  {routesLoading ? (
+                    <div className="flex items-center justify-center py-6">
+                      <Loader2 className="w-5 h-5 text-blue-600 animate-spin" />
+                    </div>
+                  ) : routes.length === 0 ? (
+                    <p className="text-center text-xs text-gray-400 py-4">暂无路由。添加后，对应客户/群的转人工将精确分配给该客服。</p>
+                  ) : (
+                    <table className="w-full text-sm">
+                      <thead className="text-gray-400 text-xs uppercase tracking-wider">
+                        <tr>
+                          <th className="text-left py-1.5 font-semibold">匹配范围</th>
+                          <th className="text-left py-1.5 font-semibold">客服</th>
+                          <th className="text-left py-1.5 font-semibold">企微 userid</th>
+                          <th className="text-left py-1.5 font-semibold">优先级</th>
+                          <th className="text-right py-1.5 font-semibold">操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {routes.map((r) => (
+                          <tr key={r.id} className="border-t border-gray-100 dark:border-gray-700">
+                            <td className="py-2 font-mono text-xs text-gray-500">
+                              {r.visitor_key ? `客户:${r.visitor_key}` : r.group_key ? `群:${r.group_key.slice(0, 18)}…` : '（默认）'}
+                            </td>
+                            <td className="py-2 text-gray-800 dark:text-gray-200">{r.staff_name}</td>
+                            <td className="py-2 font-mono text-xs text-gray-500">{r.wecom_userid || '—'}</td>
+                            <td className="py-2 text-gray-600 dark:text-gray-400">{r.priority}</td>
+                            <td className="py-2 text-right">
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteRoute(r)}
+                                className="p-1 text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-900/30 rounded"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+
                 {/* Service Time Settings */}
                 <div className="p-4 bg-gray-50 dark:bg-gray-900/50 rounded-lg border border-gray-200 dark:border-gray-700">
                   <div className="flex items-center gap-2 mb-4">

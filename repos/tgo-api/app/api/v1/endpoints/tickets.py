@@ -380,6 +380,86 @@ async def list_routes(
     return [TicketRouteResponse.model_validate(r) for r in routes]
 
 
+@router.get("/routes/groups", response_model=List[dict])
+async def list_route_groups(
+    db: Session = Depends(get_db),
+    current_user: Staff = Depends(require_permission("tickets:read")),
+) -> List[dict]:
+    """已知企微群列表（供路由配置下拉选择，避免手填 chatid）。
+
+    聚合来源（去重，按群名排序）：
+      1. pt_wecom_inbox（tgo-platform 同库时）：chat_type='group' 的 chat_id + conv_name
+      2. api_ticket_routes.group_key（已配置路由）
+      3. api_tickets.group_key（历史工单）
+      4. api_visitor_waiting_queue.group_key（排队记录）
+
+    返回: [{group_key, group_name}]，group_name 可能为空（本地聚合来源无名）。
+    """
+    pid = current_user.project_id
+    groups: dict[str, str] = {}
+
+    # 1) pt_wecom_inbox：同库部署时聚合（含群名）
+    try:
+        from sqlalchemy import text
+
+        rows = db.execute(
+            text(
+                "SELECT DISTINCT ON (chat_id) chat_id, "
+                " COALESCE(raw_payload->>'conv_name', '') AS conv_name "
+                "FROM pt_wecom_inbox "
+                "WHERE chat_id IS NOT NULL AND chat_id <> '' "
+                "ORDER BY chat_id, created_at DESC"
+            )
+        ).all()
+        for row in rows:
+            chat_id = (row[0] or "").strip()
+            if chat_id:
+                groups[chat_id] = (row[1] or "").strip() or ""
+    except Exception as e:  # noqa: BLE001 - 表不存在/不同库：忽略该来源
+        logger.debug(f"[ROUTE] pt_wecom_inbox 聚合失败(忽略): {e}")
+
+    # 2) api_ticket_routes.group_key
+    for r in db.query(TicketRoute).filter(
+        TicketRoute.project_id == pid,
+        TicketRoute.deleted_at.is_(None),
+        TicketRoute.group_key.isnot(None),
+    ).all():
+        if r.group_key:
+            groups.setdefault(r.group_key, "")
+
+    # 3) api_tickets.group_key（历史工单）
+    try:
+        for gk, in db.query(Ticket.group_key).filter(
+            Ticket.project_id == pid,
+            Ticket.deleted_at.is_(None),
+            Ticket.group_key.isnot(None),
+        ).all():
+            if gk:
+                groups.setdefault(gk, "")
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[ROUTE] tickets 群聚合失败(忽略): {e}")
+
+    # 4) api_visitor_waiting_queue.group_key
+    try:
+        from app.models import VisitorWaitingQueue
+
+        for gk, in db.query(VisitorWaitingQueue.group_key).filter(
+            VisitorWaitingQueue.project_id == pid,
+            VisitorWaitingQueue.group_key.isnot(None),
+        ).all():
+            if gk:
+                groups.setdefault(gk, "")
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[ROUTE] waiting_queue 群聚合失败(忽略): {e}")
+
+    result = [
+        {"group_key": k, "group_name": v}
+        for k, v in groups.items()
+    ]
+    result.sort(key=lambda g: (not g["group_name"], g["group_name"], g["group_key"]))
+    return result
+
+
 @router.post("/routes", response_model=TicketRouteResponse, status_code=status.HTTP_201_CREATED)
 async def create_route(
     route_data: TicketRouteCreate,
