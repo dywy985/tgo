@@ -40,6 +40,9 @@ export interface AIUsageStats {
   success_rate: number; // 0-1
   failure_count: number;
   avg_response_ms: number | null;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
 }
 
 export interface OverviewResponse {

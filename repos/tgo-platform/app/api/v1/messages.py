@@ -458,6 +458,53 @@ async def send_message(req_body: SendMessageRequest, request: Request, db: Async
                     request_id=request_id,
                 )
 
+        if platform_type == "worktool":
+            # WorkTool 桥接 (自建网关): 调网关 /api/send, 目标群 = visitor 的 from_uid 末段 (群名)
+            gateway_url = (cfg.get("gateway_url") or "").rstrip("/")
+            robot_id = str(cfg.get("robot_id") or "")
+            if not (gateway_url and robot_id):
+                return error_response(
+                    status.HTTP_400_BAD_REQUEST,
+                    code="PLATFORM_CONFIG_INVALID",
+                    message="worktool requires gateway_url and robot_id in platform config",
+                    request_id=request_id,
+                )
+            if msg_type != 1:
+                return error_response(
+                    status.HTTP_400_BAD_REQUEST,
+                    code="UNSUPPORTED_MESSAGE_TYPE",
+                    message="worktool supports only text (type=1)",
+                    request_id=request_id,
+                )
+            content_text = str(payload.get("content") or "")
+            try:
+                target_uid = await resolve_visitor_platform_open_id(visitor_id)
+            except Exception:
+                target_uid = ""
+            title = target_uid.rsplit(":", 1)[-1] if target_uid else ""
+            if not title:
+                return error_response(
+                    status.HTTP_400_BAD_REQUEST,
+                    code="PLATFORM_CONFIG_INVALID",
+                    message=f"cannot resolve group name from visitor {visitor_id}",
+                    request_id=request_id,
+                )
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(
+                    f"{gateway_url}/api/send",
+                    json={"robot_id": robot_id, "title": title, "content": content_text[:20480]},
+                )
+                data = resp.json()
+            if data.get("status") != "queued":
+                return error_response(
+                    status.HTTP_502_BAD_GATEWAY,
+                    code="WORKTOOL_SEND_FAILED",
+                    message=f"WorkTool 网关返回异常: {data}",
+                    request_id=request_id,
+                )
+            logging.info("[SEND] client_msg_no=%s worktool text sent to group %s", client_msg_no, title)
+            return {"ok": True, "client_msg_no": client_msg_no, "message": "Message sent successfully"}
+
         return error_response(status.HTTP_400_BAD_REQUEST, code="PLATFORM_TYPE_UNSUPPORTED", message=f"Unsupported platform type: {platform.type}", request_id=request_id)
 
     except httpx.HTTPStatusError as e:

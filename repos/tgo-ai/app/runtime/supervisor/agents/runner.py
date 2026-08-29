@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -53,6 +54,9 @@ class AgnoAgentRunner:
         final_content = self._ensure_text(getattr(output, "content", None))
         tools_used = self._extract_tool_names(getattr(output, "tools", None))
 
+        # 提取 LLM token usage (agno RunResponse.response_usage -> Usage)
+        usage = self._extract_usage(output)
+
         result = AgentExecutionResult(
             agent_id=context.agent.id,
             agent_name=context.agent.name,
@@ -68,6 +72,7 @@ class AgnoAgentRunner:
             agent_name=context.agent.name,
             total_execution_time=total_time,
             session_id=context.session_id,
+            usage=usage,
         )
         return SupervisorRunResponse(
             success=True,
@@ -205,3 +210,44 @@ class AgnoAgentRunner:
             if isinstance(name, str) and name:
                 names.append(name)
         return names
+
+    @classmethod
+    def _extract_usage(cls, output: Any) -> Optional[dict]:
+        """从 agno RunResponse 提取 token usage, 容错缺字段。
+
+        agno 2.x: output.metrics -> Metrics(input_tokens, output_tokens, total_tokens)
+        (旧版用 output.response_usage -> Usage(prompt_tokens, completion_tokens, total_tokens),
+         两个都兼容)
+        部分 provider 可能不返回 usage, 此时返回 None。
+        """
+        try:
+            # 优先新版 metrics, 兼容旧版 response_usage
+            metrics_obj = getattr(output, "metrics", None)
+            if metrics_obj is not None:
+                input_tok = int(getattr(metrics_obj, "input_tokens", 0) or 0)
+                output_tok = int(getattr(metrics_obj, "output_tokens", 0) or 0)
+                total_tok = int(getattr(metrics_obj, "total_tokens", 0) or 0)
+                if input_tok or output_tok or total_tok:
+                    return {
+                        "prompt_tokens": input_tok,
+                        "completion_tokens": output_tok,
+                        "total_tokens": total_tok,
+                    }
+
+            usage_obj = getattr(output, "response_usage", None)
+            if usage_obj is not None:
+                prompt = int(getattr(usage_obj, "prompt_tokens", 0) or 0)
+                completion = int(getattr(usage_obj, "completion_tokens", 0) or 0)
+                total = int(getattr(usage_obj, "total_tokens", 0) or 0)
+                if not prompt and not completion and not total:
+                    return None
+                return {
+                    "prompt_tokens": prompt,
+                    "completion_tokens": completion,
+                    "total_tokens": total,
+                }
+            return None
+        except Exception as exc:  # 提取失败不阻塞主流程
+            cls._logger = getattr(cls, "_logger", None) or logging.getLogger("runtime.supervisor.agents.runner")
+            cls._logger.warning("usage extraction failed (non-fatal): %s", exc)
+            return None

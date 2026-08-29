@@ -12,6 +12,7 @@ class Settings(BaseSettings):
 
     # tgo-api base URL
     api_base_url: str
+    api_internal_base_url: str = "http://tgo-api:8001"
 
     # PostgreSQL DSN for SQLAlchemy async engine
     database_url: str  # e.g. postgresql+asyncpg://user:pass@host:5432/db

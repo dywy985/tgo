@@ -195,18 +195,6 @@ const VisitorDetailPanel: React.FC<VisitorDetailPanelProps> = ({
   const [recentlyMovedId, setRecentlyMovedId] = useState<string | null>(null);
   const [relatedTickets, setRelatedTickets] = useState<Ticket[]>([]);
   
-  // H10: 拉取当前访客的相关工单（visitor_id 过滤）
-  useEffect(() => {
-    let cancelled = false;
-    if (!visitorId) return;
-    ticketsApiService.listTickets({ visitor_id: visitorId, limit: 5 }).then((resp) => {
-      if (!cancelled) setRelatedTickets(resp.data || []);
-    }).catch(() => {
-      if (!cancelled) setRelatedTickets([]);
-    });
-    return () => { cancelled = true; };
-  }, [visitorId]);
-  
   // 板块展开收起状态
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>(() => {
     try {
@@ -218,7 +206,7 @@ const VisitorDetailPanel: React.FC<VisitorDetailPanelProps> = ({
         system_info: false,
         plugins: true,
         recent_activity: false,
-        related_tickets: false
+        related_tickets: true
       };
     } catch {
       return {
@@ -228,7 +216,7 @@ const VisitorDetailPanel: React.FC<VisitorDetailPanelProps> = ({
         system_info: false,
         plugins: true,
         recent_activity: false,
-        related_tickets: false
+        related_tickets: true
       };
     }
   });
@@ -314,6 +302,59 @@ const VisitorDetailPanel: React.FC<VisitorDetailPanelProps> = ({
       });
     }
   }, [useChannelMode, ensureChannelInfo, isChannelFetching, showToast, channelId, channelType, channelInfo, channelStoreError, t]);
+
+  // H10: 拉取当前访客的相关工单（visitor_id 过滤）
+  // 优先用 props.visitorId; 聊天侧栏模式 (useChannelMode) 下从频道 extra.id 取访客 id
+  useEffect(() => {
+    let cancelled = false;
+    const extra = channelInfo?.extra as ChannelVisitorExtra | undefined;
+    const vid = visitorId || extra?.id || null;
+    if (!vid) return;
+    ticketsApiService.listTickets({ visitor_id: vid, limit: 5 }).then((resp) => {
+      if (!cancelled) setRelatedTickets(resp.data || []);
+    }).catch(() => {
+      if (!cancelled) setRelatedTickets([]);
+    });
+    return () => { cancelled = true; };
+  }, [visitorId, channelInfo]);
+
+  // 快捷标记已解决
+  const handleResolveTicket = useCallback(async (ticketId: string) => {
+    try {
+      await ticketsApiService.changeStatus(ticketId, 'resolved');
+      const extra = channelInfo?.extra as ChannelVisitorExtra | undefined;
+      const vid = visitorId || extra?.id || null;
+      if (vid) {
+        const resp = await ticketsApiService.listTickets({ visitor_id: vid, limit: 5 });
+        setRelatedTickets(resp.data || []);
+      }
+      showToast('success', '工单已标记解决');
+    } catch (err) {
+      showToast('error', '标记失败', err instanceof Error ? err.message : String(err));
+    }
+  }, [visitorId, channelInfo, showToast]);
+
+  // 快捷拒绝 (必填原因)
+  const handleRejectTicket = useCallback(async (ticketId: string) => {
+    const reason = window.prompt('请输入拒绝原因（必填）：');
+    if (reason === null) return; // 取消
+    if (!reason.trim()) {
+      showToast('error', '拒绝原因不能为空');
+      return;
+    }
+    try {
+      await ticketsApiService.changeStatus(ticketId, 'rejected', reason.trim());
+      const extra = channelInfo?.extra as ChannelVisitorExtra | undefined;
+      const vid = visitorId || extra?.id || null;
+      if (vid) {
+        const resp = await ticketsApiService.listTickets({ visitor_id: vid, limit: 5 });
+        setRelatedTickets(resp.data || []);
+      }
+      showToast('success', '工单已拒绝');
+    } catch (err) {
+      showToast('error', '拒绝失败', err instanceof Error ? err.message : String(err));
+    }
+  }, [visitorId, channelInfo, showToast]);
 
   // 独立模式：从 visitorData 或 API 获取数据
   useEffect(() => {
@@ -1209,8 +1250,9 @@ const VisitorDetailPanel: React.FC<VisitorDetailPanelProps> = ({
                     id: tk.id,
                     number: tk.number,
                     title: tk.title,
-                    status: tk.status === 'open' ? 'open' : tk.status === 'closed' ? 'closed' : 'pending',
+                    status: tk.status,
                     url: `/tickets/${tk.id}`,
+                    resolvable: !['resolved', 'closed', 'rejected'].includes(tk.status),
                   }))}
                   draggable
                   className={sectionClassName}
@@ -1218,6 +1260,8 @@ const VisitorDetailPanel: React.FC<VisitorDetailPanelProps> = ({
                   onToggle={(expanded) => handleToggleSection('related_tickets', expanded)}
                   onDragStart={(e) => handleDragStart(e, 'related_tickets')}
                   onDragEnd={handleDragEnd}
+                  onResolve={handleResolveTicket}
+                  onReject={handleRejectTicket}
                 />
               );
             default:

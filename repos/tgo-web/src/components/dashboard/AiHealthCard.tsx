@@ -1,5 +1,5 @@
 /**
- * AiHealthCard — AI 运行状况：成功率（环形）+ 平均响应
+ * AiHealthCard — AI 运行状况：成功率（环形）+ 请求量 + Token 消耗
  */
 
 import React from 'react';
@@ -9,6 +9,16 @@ import type { AIUsageStats } from '../../types/dashboard';
 interface AiHealthCardProps {
   ai: AIUsageStats | null;
 }
+
+const fmt = (n: number) => (n ?? 0).toLocaleString('zh-CN');
+
+// Token 数字格式化: >= 1M 显示 xx.xM, >= 1k 显示 x.xk, 否则原样
+const fmtTokens = (n: number) => {
+  const v = n ?? 0;
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 1_000) return `${(v / 1_000).toFixed(1)}k`;
+  return String(v);
+};
 
 export const AiHealthCard: React.FC<AiHealthCardProps> = ({ ai }) => {
   const successRate = ai?.success_rate ?? 0;
@@ -54,16 +64,44 @@ export const AiHealthCard: React.FC<AiHealthCardProps> = ({ ai }) => {
         <div className="space-y-3">
           <div>
             <div className="text-2xl font-semibold text-gray-900 dark:text-gray-100 tabular-nums">
+              {fmt(ai?.request_count ?? 0)}
+            </div>
+            <div className="text-xs text-gray-400">请求次数</div>
+          </div>
+          <div>
+            <div className="text-lg font-medium text-gray-900 dark:text-gray-100 tabular-nums">
               {ai?.avg_response_ms ? `${(ai.avg_response_ms / 1000).toFixed(1)}s` : '--'}
             </div>
             <div className="text-xs text-gray-400">平均响应</div>
           </div>
           <div>
             <div className="text-lg font-medium text-gray-900 dark:text-gray-100 tabular-nums">
-              {(ai?.failure_count ?? 0).toLocaleString('zh-CN')}
+              {fmt(ai?.failure_count ?? 0)}
             </div>
             <div className="text-xs text-gray-400">失败次数</div>
           </div>
+        </div>
+      </div>
+
+      {/* Token 消耗区 */}
+      <div className="mt-3 pt-3 border-t border-gray-200/50 dark:border-gray-700/50 grid grid-cols-3 gap-2">
+        <div className="text-center">
+          <div className="text-base font-semibold text-violet-600 dark:text-violet-400 tabular-nums">
+            {fmtTokens(ai?.prompt_tokens ?? 0)}
+          </div>
+          <div className="text-[10px] text-gray-400">Prompt Tokens</div>
+        </div>
+        <div className="text-center">
+          <div className="text-base font-semibold text-sky-600 dark:text-sky-400 tabular-nums">
+            {fmtTokens(ai?.completion_tokens ?? 0)}
+          </div>
+          <div className="text-[10px] text-gray-400">生成 Tokens</div>
+        </div>
+        <div className="text-center">
+          <div className="text-base font-semibold text-gray-900 dark:text-gray-100 tabular-nums">
+            {fmtTokens(ai?.total_tokens ?? 0)}
+          </div>
+          <div className="text-[10px] text-gray-400">总 Tokens</div>
         </div>
       </div>
     </div>

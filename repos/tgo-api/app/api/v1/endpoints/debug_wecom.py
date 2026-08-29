@@ -93,6 +93,15 @@ DEFAULT_TRIGGER = {
     "score_threshold": 60,
     "llm_prefilter": False,
     "ignore_members": [],
+    # 转人工关键词 (客户消息命中即转人工, 不依赖 AI 判定)
+    "manual_service_kw": ["转人工", "人工客服", "找人工", "人工服务", "转接人工", "真人客服", "我要人工", "人工处理", "联系人工"],
+    # 评分词库 (规则评分: 业务词/提问词加分, 闲聊词减分; 未命中任何词时基础分为 0)
+    "business_kw": ["激活", "授权", "激活码", "工单", "价格", "多少钱", "购买", "买", "售后", "退货",
+                    "换货", "物流", "快递", "发票", "客服", "人工", "怎么用", "如何使用", "故障", "报错",
+                    "错误", "登录", "账号", "密码", "K6K8", "k6k8", "安装", "下载", "升级", "版本",
+                    "到期", "续费", "退款", "套餐", "报价", "试用"],
+    "question_kw": ["怎么", "如何", "请问", "为什么", "能不能", "有没有", "多少", "哪里", "什么", "能否", "是否"],
+    "chat_kw": ["哈哈", "哈哈哈", "早上好", "晚上好", "中午好", "晚安", "收到", "在吗", "嗯嗯", "好的", "谢谢", "感谢", "哦"],
 }
 
 
@@ -187,7 +196,7 @@ async def wecom_trigger_get(
 ) -> dict:
     """读企微通道触发配置 (存于 pt_platforms.config.trigger)。"""
     row = db.execute(
-        text("SELECT config FROM pt_platforms WHERE type = 'wecom_reader' AND is_active = true ORDER BY created_at LIMIT 1")
+        text("SELECT config FROM pt_platforms WHERE type IN ('wecom_reader', 'worktool') AND is_active = true ORDER BY created_at LIMIT 1")
     ).mappings().first()
     cfg = dict(row["config"] or {}) if row else {}
     trigger = dict(cfg.get("trigger") or {})
@@ -214,9 +223,10 @@ async def wecom_trigger_put(
     trigger["ignore_members"] = [str(x).strip() for x in trigger.get("ignore_members", []) if str(x).strip()]
 
     # 双表更新: pt_platforms (tgo-platform 消费) + api_platforms (后台展示)
+    # 覆盖 wecom_reader + worktool 两种通道类型 (worktool 桥复用 wecom_reader 的触发语义)
     for table in ("pt_platforms", "api_platforms"):
         db.execute(
-            text(f"UPDATE {table} SET config = jsonb_set(COALESCE(config, '{{}}'::jsonb), '{{trigger}}', CAST(:trigger AS jsonb)) WHERE type = 'wecom_reader' AND is_active = true"),
+            text(f"UPDATE {table} SET config = jsonb_set(COALESCE(config, '{{}}'::jsonb), '{{trigger}}', CAST(:trigger AS jsonb)) WHERE type IN ('wecom_reader', 'worktool') AND is_active = true"),
             {"trigger": json.dumps(trigger, ensure_ascii=False)},
         )
     db.commit()

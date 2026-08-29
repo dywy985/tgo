@@ -169,3 +169,8 @@ envs/
 /data/
 repos/tgo-plugin-sdk/
 .worktrees/
+
+# 一次性部署/测试脚本(不入库)
+deploy_*.sh
+test_mirrors.sh
+test_ticket_api.sh

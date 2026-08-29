@@ -7,8 +7,11 @@ interface TicketItem {
   id: string;
   number: string;
   title: string;
-  status?: 'open' | 'closed' | 'pending';
+  /** 后端工单状态: open/pending_human/processing/resolved/closed/rejected */
+  status?: string;
   url?: string;
+  /** 非终态 (可标记解决/拒绝) */
+  resolvable?: boolean;
 }
 
 interface RelatedTicketsSectionProps {
@@ -21,6 +24,10 @@ interface RelatedTicketsSectionProps {
   onDragEnd?: (e: React.DragEvent) => void;
   onDragOver?: (e: React.DragEvent) => void;
   onDrop?: (e: React.DragEvent) => void;
+  /** 快捷标记解决 */
+  onResolve?: (id: string) => void;
+  /** 快捷拒绝 (必填原因由调用方弹窗收集) */
+  onReject?: (id: string) => void;
 }
 
 /**
@@ -36,16 +43,24 @@ const RelatedTicketsSection: React.FC<RelatedTicketsSectionProps> = ({
   onDragEnd,
   onDragOver,
   onDrop,
+  onResolve,
+  onReject,
 }) => {
   const { t } = useTranslation();
   const getStatusColor = (status?: TicketItem['status']) => {
     switch (status) {
-      case 'open':
-        return 'text-green-600 hover:text-green-700';
+      case 'resolved':
+        return 'text-teal-600 hover:text-teal-700';
+      case 'rejected':
+        return 'text-red-600 hover:text-red-700';
       case 'closed':
         return 'text-gray-600 hover:text-gray-700';
-      case 'pending':
+      case 'pending_human':
         return 'text-yellow-600 hover:text-yellow-700';
+      case 'processing':
+        return 'text-blue-600 hover:text-blue-700';
+      case 'open':
+        return 'text-green-600 hover:text-green-700';
       default:
         return 'text-blue-600 hover:text-blue-700';
     }
@@ -54,10 +69,16 @@ const RelatedTicketsSection: React.FC<RelatedTicketsSectionProps> = ({
     switch (status) {
       case 'open':
         return t('ticket.status.open', '待处理');
+      case 'pending_human':
+        return t('ticket.status.pendingHuman', '待人工接手');
+      case 'processing':
+        return t('ticket.status.processing', '处理中');
+      case 'resolved':
+        return t('ticket.status.resolved', '已解决');
       case 'closed':
         return t('ticket.status.closed', '已关闭');
-      case 'pending':
-        return t('ticket.status.pending', '处理中');
+      case 'rejected':
+        return t('ticket.status.rejected', '已拒绝');
       default:
         return t('ticket.status.unknown', '未知');
     }
@@ -103,6 +124,26 @@ const RelatedTicketsSection: React.FC<RelatedTicketsSectionProps> = ({
                 <p className="text-[12px] text-gray-500 dark:text-gray-400 truncate mt-0.5" title={item.title}>
                   {item.title}
                 </p>
+                {item.resolvable && (onResolve || onReject) && (
+                  <div className="flex items-center gap-2 mt-1.5">
+                    {onResolve && (
+                      <button
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); onResolve(item.id); }}
+                        className="px-2 py-0.5 text-[11px] font-medium text-teal-600 dark:text-teal-400 bg-teal-50 dark:bg-teal-900/30 hover:bg-teal-100 dark:hover:bg-teal-900/50 rounded"
+                      >
+                        ✓ 解决
+                      </button>
+                    )}
+                    {onReject && (
+                      <button
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); onReject(item.id); }}
+                        className="px-2 py-0.5 text-[11px] font-medium text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/30 hover:bg-red-100 dark:hover:bg-red-900/50 rounded"
+                      >
+                        ✗ 拒绝
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             </a>
           ))

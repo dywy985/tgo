@@ -308,6 +308,28 @@ class AgentUsageRecord(BaseModel):
         comment="Number of failed requests",
     )
 
+    # Token usage (added for AI usage stats: 请求次数 + token 消耗)
+    prompt_tokens: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        comment="Total prompt tokens consumed in this period",
+    )
+
+    completion_tokens: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        comment="Total completion tokens generated in this period",
+    )
+
+    total_tokens: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        comment="Total tokens consumed (prompt + completion) in this period",
+    )
+
     avg_response_time_ms: Mapped[Optional[int]] = mapped_column(
         Integer,
         nullable=True,

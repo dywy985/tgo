@@ -1164,6 +1164,17 @@ async def _handle_wecom_reader_webhook(
         source_type = (platform.type or "").lower()
         if source_type not in ("wecom_reader", "worktool", "wecom_bot"):
             source_type = "wecom_reader"
+        # 幂等去重: 先查后插 (避免 asyncpg UniqueViolation 二次异常污染 session)
+        if message_id:
+            dup = await db.scalar(
+                select(WeComInbox.id).where(
+                    WeComInbox.platform_id == platform.id,
+                    WeComInbox.message_id == message_id,
+                )
+            )
+            if dup:
+                logging.info("[WECOM_READER] Duplicate message skipped: %s", message_id)
+                return {"ok": True}
         inbox_record = WeComInbox(
             platform_id=platform.id,
             message_id=message_id or str(uuid.uuid4()),
@@ -1185,7 +1196,8 @@ async def _handle_wecom_reader_webhook(
         logging.info("[WECOM_READER] Duplicate message detected for %s: %s", platform.id, e)
         await db.rollback()
     except Exception as e:
-        logging.error("[WECOM_READER] Store failed for %s: %s", platform.id, e)
+        import traceback
+        logging.error("[WECOM_READER] Store failed for %s: %s\n%s", platform.id, e, traceback.format_exc())
         await db.rollback()
         return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -1260,7 +1272,12 @@ async def platforms_callback(platform_api_key: str, request: Request, db: AsyncS
         return await _handle_wecom_reader_webhook(platform=platform, request=request, db=db)
     if platform_type == "worktool":
         # WorkTool 上行消息与 wecom_reader 同为自研 JSON 桥接格式, 复用同一 handler
-        return await _handle_wecom_reader_webhook(platform=platform, request=request, db=db)
+        try:
+            return await _handle_wecom_reader_webhook(platform=platform, request=request, db=db)
+        except Exception as e:
+            import traceback
+            logging.error("[WORKTOOL] handler exception: %s\n%s", e, traceback.format_exc())
+            raise
     if platform_type == "wecom_bot":
         # aibot 长连接机器人接收侧 (v2.0), 复用同一 handler
         return await _handle_wecom_reader_webhook(platform=platform, request=request, db=db)

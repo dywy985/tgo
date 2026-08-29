@@ -55,7 +55,7 @@ class WorkToolAdapter(BasePlatformAdapter):
         headers = {}
         if self.api_key:
             headers["X-API-Key"] = self.api_key
-        payload = {"robot_id": self.robot_id, "title": chatid, "content": text[:20480]}
+        payload = {"robot_id": self.robot_id, "title": self.chatid, "content": text[:20480]}
         try:
             async with httpx.AsyncClient(timeout=self.http_timeout) as client:
                 resp = await client.post(f"{self.gateway_url}/api/send", json=payload, headers=headers)

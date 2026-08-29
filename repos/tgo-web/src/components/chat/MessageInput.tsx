@@ -249,8 +249,10 @@ const MessageInput: React.FC<MessageInputProps> = ({
   );
   const assignedStaffName = assignedStaffChannelInfo?.name;
   
-  // agent 会话时不禁用手动输入
-  const isManualDisabled = isAIChat ? false : isAIEnabled;
+  // agent 会话时不禁用手动输入;
+  // 桥接平台 (worktool/wecom 等) 客服需要随时回复客户, 仅网站平台在 AI 托管时禁用手动输入
+  const platformType = visitorExtra?.platform_type;
+  const isManualDisabled = isAIChat ? false : (isAIEnabled && platformType === PlatformType.WEBSITE);
   // 流消息进行中时不禁用输入框，但发送按钮会变成暂停按钮
   const { showToast, showError } = useToast();
   useEffect(() => {

@@ -50,6 +50,9 @@ class AIUsageStats(BaseModel):
     success_rate: float = Field(0.0, description="成功率 0-1")
     failure_count: int = Field(0)
     avg_response_ms: Optional[int] = Field(None, description="平均响应耗时 ms")
+    prompt_tokens: int = Field(0, description="周期内 prompt token 消耗")
+    completion_tokens: int = Field(0, description="周期内 completion token 消耗")
+    total_tokens: int = Field(0, description="周期内总 token 消耗")
 
 
 class OverviewResponse(BaseModel):

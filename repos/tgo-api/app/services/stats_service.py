@@ -148,6 +148,17 @@ def get_overview(
     platform_id: Optional[UUID] = None,
 ) -> dict:
     # 1) 会话 / 消息三分量 / UV / AI 服务会话数 —— 单条聚合 SQL
+    # AI 服务会话 = ai_message_count>0 或 发生过 AI/系统转人工 (llm/transfer)
+    # (转人工关键词命中的会话可能没有 ai_message_count, 但 AI 判定转人工 = AI 参与过)
+    ai_session_exists = (
+        db.query(VisitorAssignmentHistory.id)
+        .filter(
+            VisitorAssignmentHistory.session_id == VisitorSession.id,
+            VisitorAssignmentHistory.project_id == project_id,
+            VisitorAssignmentHistory.source.in_(HANDOFF_SOURCES),
+        )
+        .exists()
+    )
     q = db.query(
         func.count(VisitorSession.id),
         func.count(VisitorSession.id).filter(VisitorSession.status == SessionStatus.OPEN.value),
@@ -155,7 +166,9 @@ def get_overview(
         func.coalesce(func.sum(VisitorSession.ai_message_count), 0),
         func.coalesce(func.sum(VisitorSession.staff_message_count), 0),
         func.count(func.distinct(VisitorSession.visitor_id)),
-        func.count(VisitorSession.id).filter(VisitorSession.ai_message_count > 0),
+        func.count(VisitorSession.id).filter(
+            (VisitorSession.ai_message_count > 0) | ai_session_exists
+        ),
     ).filter(
         VisitorSession.project_id == project_id,
         VisitorSession.created_at >= start,
@@ -164,27 +177,34 @@ def get_overview(
     q = _apply_platform_filter(q, VisitorSession, platform_id)
     total, open_count, vm, am, sm, uv, ai_sessions = q.one()
 
-    # 2) 转人工数（事件级；按转人工发生时间归属周期）
-    hq = db.query(func.count(func.distinct(VisitorAssignmentHistory.session_id))).filter(
+    # 2) 转人工数（按"会话创建时间"归属周期, 与分母 ai_session_count 口径一致,
+    #    避免 会话昨天创建+今天转人工 导致 分子>分母 出现 >100%）
+    hq = db.query(func.count(func.distinct(VisitorAssignmentHistory.session_id))).join(
+        VisitorSession, VisitorAssignmentHistory.session_id == VisitorSession.id
+    ).filter(
         VisitorAssignmentHistory.project_id == project_id,
         VisitorAssignmentHistory.source.in_(HANDOFF_SOURCES),
-        VisitorAssignmentHistory.created_at >= start,
-        VisitorAssignmentHistory.created_at < end,
+        VisitorSession.created_at >= start,
+        VisitorSession.created_at < end,
         VisitorAssignmentHistory.session_id.isnot(None),
     )
     if platform_id:
-        hq = hq.join(VisitorSession, VisitorAssignmentHistory.session_id == VisitorSession.id).filter(
-            VisitorSession.platform_id == platform_id
-        )
+        hq = hq.filter(VisitorSession.platform_id == platform_id)
     handoff_count = int(hq.scalar() or 0)
 
     # 3) AI 用量（跨服务表 ai_agent_usage_records，同库直查；容错：表/数据缺失不拖垮面板）
-    ai = {"request_count": 0, "success_rate": 0.0, "failure_count": 0, "avg_response_ms": None}
+    ai = {
+        "request_count": 0, "success_rate": 0.0, "failure_count": 0,
+        "avg_response_ms": None, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+    }
     try:
-        req, fail, avg = db.query(
+        req, fail, avg, ptok, ctok, ttok = db.query(
             func.coalesce(func.sum(AgentUsageRecord.request_count), 0),
             func.coalesce(func.sum(AgentUsageRecord.failure_count), 0),
             func.avg(AgentUsageRecord.avg_response_time_ms),
+            func.coalesce(func.sum(AgentUsageRecord.prompt_tokens), 0),
+            func.coalesce(func.sum(AgentUsageRecord.completion_tokens), 0),
+            func.coalesce(func.sum(AgentUsageRecord.total_tokens), 0),
         ).filter(
             AgentUsageRecord.project_id == project_id,
             AgentUsageRecord.aggregation_type == "daily",
@@ -197,6 +217,9 @@ def get_overview(
             "failure_count": fail,
             "success_rate": round((req - fail) / req, 4) if req else 0.0,
             "avg_response_ms": int(avg) if avg else None,
+            "prompt_tokens": int(ptok or 0),
+            "completion_tokens": int(ctok or 0),
+            "total_tokens": int(ttok or 0),
         }
     except Exception as exc:
         logger.warning("ai_agent_usage_records unavailable: %s", exc)
@@ -221,7 +244,8 @@ def get_overview(
         },
         "handoff": {
             "count": handoff_count,
-            "rate": round(handoff_count / ai_sessions, 4) if ai_sessions else 0.0,
+            # 分子分母同口径(会话创建时间), 但仍防御性 cap 到 1.0
+            "rate": round(min(handoff_count / ai_sessions, 1.0), 4) if ai_sessions else 0.0,
         },
         "visitors": {"uv": int(uv or 0)},
         "ai": ai,
@@ -259,22 +283,22 @@ def get_trends(
     q = _apply_platform_filter(q, VisitorSession, platform_id)
     session_rows = q.group_by(bucket).order_by(bucket).all()
 
-    # 转人工序列（按事件时间）
-    hbucket = func.date_trunc(granularity, VisitorAssignmentHistory.created_at)
+    # 转人工序列（按会话创建时间, 与会话/消息序列口径一致）
+    hbucket = func.date_trunc(granularity, VisitorSession.created_at)
     hq = db.query(
         hbucket.label("bucket"),
         func.count(func.distinct(VisitorAssignmentHistory.session_id)),
+    ).join(
+        VisitorSession, VisitorAssignmentHistory.session_id == VisitorSession.id
     ).filter(
         VisitorAssignmentHistory.project_id == project_id,
         VisitorAssignmentHistory.source.in_(HANDOFF_SOURCES),
-        VisitorAssignmentHistory.created_at >= start,
-        VisitorAssignmentHistory.created_at < end,
+        VisitorSession.created_at >= start,
+        VisitorSession.created_at < end,
         VisitorAssignmentHistory.session_id.isnot(None),
     )
     if platform_id:
-        hq = hq.join(VisitorSession, VisitorAssignmentHistory.session_id == VisitorSession.id).filter(
-            VisitorSession.platform_id == platform_id
-        )
+        hq = hq.filter(VisitorSession.platform_id == platform_id)
     handoff_rows = hq.group_by(hbucket).order_by(hbucket).all()
 
     # 补零对齐

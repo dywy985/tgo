@@ -74,7 +74,12 @@ class SupervisorRuntimeService:
                 agent_id=str(context.agent.id),
                 request_id=context.request_id,
             )
-            return await self._agent_runner.run(built_agent, context)
+            response = await self._agent_runner.run(built_agent, context)
+
+            # 记录 usage (请求数 + token) 到 ai_agent_usage_records, 供统计面板使用
+            await self._persist_usage(response, context)
+
+            return response
         except NotFoundError as exc:
             return self._build_failure_response(str(exc))
         except ValueError as exc:
@@ -86,6 +91,43 @@ class SupervisorRuntimeService:
                 request_id=headers.get("X-Request-ID"),
             )
             return self._build_failure_response(str(exc) or "Agent run failed")
+
+    async def _persist_usage(
+        self,
+        response: SupervisorRunResponse,
+        context: AgentExecutionContext,
+    ) -> None:
+        """把本次 run 的 token 用量写入 ai_agent_usage_records (尽力而为, 失败不阻塞)。"""
+        try:
+            usage = None
+            if response.metadata is not None:
+                usage = getattr(response.metadata, "usage", None)
+            if not usage:
+                return
+            from app.services.usage_service import record_usage
+
+            class _UsageProxy:
+                """把 dict 包装成 record_usage 期望的 usage 对象。"""
+
+                def __init__(self, data: dict) -> None:
+                    self.prompt_tokens = int(data.get("prompt_tokens", 0) or 0)
+                    self.completion_tokens = int(data.get("completion_tokens", 0) or 0)
+                    self.total_tokens = int(data.get("total_tokens", 0) or 0)
+
+            async with self._session_factory() as db:
+                await record_usage(
+                    db,
+                    project_id=str(context.project_id),
+                    agent_id=context.agent.id,
+                    usage=_UsageProxy(usage),
+                    response_time_ms=(
+                        int(response.metadata.total_execution_time * 1000)
+                        if response.metadata is not None else None
+                    ),
+                    success=True,
+                )
+        except Exception as exc:
+            self._logger.warning("usage persist failed (non-fatal): %s", exc)
 
     async def stream(
         self,

@@ -73,6 +73,9 @@ class ChatCompletionRequest(BaseModel):
     msg_type: int | None = 1
     extra: dict | None = None
     timeout_seconds: int | None = 120
+    # 客户消息同步由 tgo-platform consumer 统一处理 (评分不过的消息也要可见),
+    # 关闭 tgo-api 的 chat_completion 回显, 避免双重同步
+    forward_user_message_to_wukongim: bool = False
 
 
 class StreamEvent(BaseModel):

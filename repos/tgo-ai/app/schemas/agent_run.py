@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import ConfigDict, Field
 
@@ -105,6 +105,10 @@ class AgentRunMetadata(BaseSchema):
     session_id: Optional[str] = Field(
         default=None,
         description="Conversation session ID for this run",
+    )
+    usage: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="LLM token usage: {prompt_tokens, completion_tokens, total_tokens}",
     )
 
     model_config = ConfigDict(extra="allow")

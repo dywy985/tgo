@@ -20,7 +20,7 @@ logger = logging.getLogger("internal.tickets_command")
 router = APIRouter()
 
 # resolved 允许的进入状态（对齐 TICKET_STATUS_TRANSITIONS）
-RESOLVABLE_STATUSES = {"open", "waiting_customer", "pending_human", "processing"}
+RESOLVABLE_STATUSES = {"open", "pending_human", "processing"}
 
 
 class TicketCommandRequest(BaseModel):

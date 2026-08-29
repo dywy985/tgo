@@ -35,6 +35,10 @@ interface TriggerConfig {
   score_threshold: number;
   llm_prefilter: boolean;
   ignore_members: string[];
+  manual_service_kw: string[];
+  business_kw: string[];
+  question_kw: string[];
+  chat_kw: string[];
 }
 
 const WecomDebugPanel: React.FC = () => {
@@ -59,6 +63,10 @@ const WecomDebugPanel: React.FC = () => {
   // 触发配置
   const [triggerCfg, setTriggerCfg] = useState<TriggerConfig>({
     mode: 'hybrid', score_threshold: 60, llm_prefilter: false, ignore_members: [],
+    manual_service_kw: ['转人工', '人工客服', '找人工', '人工服务', '转接人工', '真人客服', '我要人工', '人工处理', '联系人工'],
+    business_kw: ['激活', '授权', '激活码', '工单', '价格', '多少钱', '购买', '买', '售后', '退货', '换货', '物流', '快递', '发票', '客服', '人工', '怎么用', '如何使用', '故障', '报错', '错误', '登录', '账号', '密码', 'K6K8', 'k6k8', '安装', '下载', '升级', '版本', '到期', '续费', '退款', '套餐', '报价', '试用'],
+    question_kw: ['怎么', '如何', '请问', '为什么', '能不能', '有没有', '多少', '哪里', '什么', '能否', '是否'],
+    chat_kw: ['哈哈', '哈哈哈', '早上好', '晚上好', '中午好', '晚安', '收到', '在吗', '嗯嗯', '好的', '谢谢', '感谢', '哦'],
   });
   const [savingTrigger, setSavingTrigger] = useState(false);
   const [triggerSaved, setTriggerSaved] = useState(false);
@@ -96,6 +104,10 @@ const WecomDebugPanel: React.FC = () => {
         trigger: {
           ...triggerCfg,
           ignore_members: triggerCfg.ignore_members.join(',').split(/[,，\s]+/).map((s: string) => s.trim()).filter(Boolean),
+          manual_service_kw: triggerCfg.manual_service_kw.join('\n').split(/[\n,，\s]+/).map((s: string) => s.trim()).filter(Boolean),
+          business_kw: triggerCfg.business_kw.join('\n').split(/[\n,，\s]+/).map((s: string) => s.trim()).filter(Boolean),
+          question_kw: triggerCfg.question_kw.join('\n').split(/[\n,，\s]+/).map((s: string) => s.trim()).filter(Boolean),
+          chat_kw: triggerCfg.chat_kw.join('\n').split(/[\n,，\s]+/).map((s: string) => s.trim()).filter(Boolean),
         },
       });
       setTriggerSaved(true);
@@ -416,7 +428,7 @@ const WecomDebugPanel: React.FC = () => {
           className="px-2 py-1.5 rounded-md text-sm border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200"
         />
         <div className="text-xs text-gray-400">
-          参考：问句+40 ｜ 求助词(报错/打不开/登录不上)+40 ｜ 疑问词(怎么/如何)+30 ｜ 产品词(K6/K8/K9)+20 ｜ 广告-50 ｜ 闲聊-30
+          参考：业务词(激活/授权/K6K8/价格/售后等)+60 ｜ 提问词(怎么/如何/请问)+20 ｜ 问号+10 ｜ 闲聊(哈哈/早上好/收到)-50 ｜ 4字以上+10 ｜ 2字以下-40
         </div>
 
         <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-200">
@@ -436,6 +448,50 @@ const WecomDebugPanel: React.FC = () => {
           placeholder="如：张三,李四"
           className="px-2 py-1.5 rounded-md text-sm border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200"
         />
+
+        <div className="border-t border-gray-200 dark:border-gray-700 pt-3 flex flex-col gap-2">
+          <div className="text-sm font-medium text-gray-700 dark:text-gray-200">转人工与评分词库</div>
+          <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
+            每行一个关键词（支持逗号分隔）。客户消息命中<code>转人工关键词</code>时直接转人工（不依赖 AI 判定）；
+            <code>评分词库</code>用于规则评分过滤无关消息（低于阈值的闲聊/无意义消息不触发 AI）。
+          </p>
+
+          <label className="text-xs text-gray-500 dark:text-gray-400">转人工关键词（命中即转人工）</label>
+          <textarea
+            rows={3}
+            value={triggerCfg.manual_service_kw.join('\n')}
+            onChange={(e) => setTriggerCfg({ ...triggerCfg, manual_service_kw: e.target.value.split(/[\n,，]+/) })}
+            placeholder={'转人工\n人工客服\n找人工'}
+            className="px-2 py-1.5 rounded-md text-sm border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 font-mono"
+          />
+
+          <label className="text-xs text-gray-500 dark:text-gray-400">业务词库（+60 分/条，命中任意一条即可）</label>
+          <textarea
+            rows={4}
+            value={triggerCfg.business_kw.join('\n')}
+            onChange={(e) => setTriggerCfg({ ...triggerCfg, business_kw: e.target.value.split(/[\n,，]+/) })}
+            placeholder={'激活\n授权\n价格'}
+            className="px-2 py-1.5 rounded-md text-sm border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 font-mono"
+          />
+
+          <label className="text-xs text-gray-500 dark:text-gray-400">提问词库（+20 分/条）</label>
+          <textarea
+            rows={2}
+            value={triggerCfg.question_kw.join('\n')}
+            onChange={(e) => setTriggerCfg({ ...triggerCfg, question_kw: e.target.value.split(/[\n,，]+/) })}
+            placeholder={'怎么\n如何\n请问'}
+            className="px-2 py-1.5 rounded-md text-sm border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 font-mono"
+          />
+
+          <label className="text-xs text-gray-500 dark:text-gray-400">闲聊词库（-50 分/条，命中任意一条即大幅降分）</label>
+          <textarea
+            rows={2}
+            value={triggerCfg.chat_kw.join('\n')}
+            onChange={(e) => setTriggerCfg({ ...triggerCfg, chat_kw: e.target.value.split(/[\n,，]+/) })}
+            placeholder={'哈哈\n早上好\n收到'}
+            className="px-2 py-1.5 rounded-md text-sm border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 font-mono"
+          />
+        </div>
 
         <button
           onClick={saveTrigger}

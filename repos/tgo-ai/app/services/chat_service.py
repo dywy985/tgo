@@ -122,6 +122,7 @@ class ChatService:
         project_id: uuid.UUID,
     ) -> ChatCompletionResponse:
         """Create a non-streaming chat completion with optional agentic loop."""
+        _started_at = time.monotonic()
         provider = await self._get_provider(request.provider_id, project_id)
         provider_kind = (provider.provider_kind or "").lower()
 
@@ -234,7 +235,23 @@ class ChatService:
             total_usage.completion_tokens += response.usage.completion_tokens
             total_usage.total_tokens += response.usage.total_tokens
         response.usage = total_usage
-        
+
+        # 记录 usage (请求数 + token) 到 ai_agent_usage_records, 供统计面板使用
+        try:
+            from app.services.usage_service import record_usage
+            await record_usage(
+                self.db,
+                project_id=project_id,
+                agent_id=getattr(request, "agent_id", None),
+                usage=total_usage,
+                response_time_ms=(
+                    int((time.monotonic() - _started_at) * 1000) if _started_at else None
+                ),
+                success=True,
+            )
+        except Exception as _usage_err:
+            self._logger.warning("usage record failed (non-fatal): %s", _usage_err)
+
         return response
 
     async def create_completion_stream(
