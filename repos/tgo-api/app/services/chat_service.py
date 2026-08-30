@@ -78,11 +78,14 @@ def validate_platform_and_project(
     return platform, project
 
 
-def is_ai_disabled(platform: Platform, visitor: Optional[Visitor]) -> bool:
+def is_ai_disabled(db: Session, platform: Platform, visitor: Optional[Visitor]) -> bool:
     """Check if AI is disabled for the platform or visitor.
-    
+
     Logic priority:
     1. If visitor.ai_disabled is not None, use that value
+       - 转人工关闭 AI 后: 若人工从未响应(open 会话 staff_message_count=0),
+         允许 AI 兜底回复(防止人工没人接时客户消息石沉大海);
+         人工一旦回复过, AI 关闭才真正生效(不抢答)
     2. Otherwise, check platform.ai_mode:
        - "auto" means AI is enabled (return False)
        - Any other value means AI is disabled (return True)
@@ -91,11 +94,36 @@ def is_ai_disabled(platform: Platform, visitor: Optional[Visitor]) -> bool:
     if visitor is not None:
         visitor_ai_disabled = getattr(visitor, "ai_disabled", None)
         if visitor_ai_disabled is not None:
-            return visitor_ai_disabled
-    
+            if visitor_ai_disabled:
+                # 转人工后 AI 关闭: 人工未响应时 AI 兜底
+                return not _staff_never_replied(db, visitor)
+            return False
+
     # Fall back to ai_mode: "auto" means AI enabled, others mean disabled
     ai_mode = getattr(platform, "ai_mode", None)
     return ai_mode != "auto"
+
+
+def _staff_never_replied(db: Session, visitor: Visitor) -> bool:
+    """转人工后人工是否从未回复 (open 会话 staff_message_count == 0)。"""
+    try:
+        from app.models import SessionStatus, VisitorSession
+
+        session = (
+            db.query(VisitorSession)
+            .filter(
+                VisitorSession.visitor_id == visitor.id,
+                VisitorSession.status == SessionStatus.OPEN.value,
+            )
+            .order_by(VisitorSession.created_at.desc())
+            .first()
+        )
+        if not session:
+            # 无 open 会话(转人工后会话已关) → 允许 AI, 避免永久静默
+            return True
+        return (session.staff_message_count or 0) == 0
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def sse_format(event: Dict[str, Any]) -> str:

@@ -436,7 +436,7 @@ async def chat_completion(req: ChatCompletionRequest, db: Session = Depends(get_
 
     # 5) Check AI disabled status (removed auto-recovery logic - should only be triggered by explicit staff action or platform setting change)
     # 5.1) Check AI disabled status
-    ai_disabled = chat_service.is_ai_disabled(platform, visitor)
+    ai_disabled = chat_service.is_ai_disabled(db, platform, visitor)
     
     # 6) If AI is disabled, return appropriate response
     if ai_disabled:
@@ -1088,7 +1088,7 @@ async def chat_completion_openai_compatible(
             )
 
     # 7) Check AI disabled status
-    ai_disabled = chat_service.is_ai_disabled(platform, visitor)
+    ai_disabled = chat_service.is_ai_disabled(db, platform, visitor)
     
     if ai_disabled:
         # Check if this is specifically assist mode (visitor not explicitly disabled)
