@@ -23,6 +23,10 @@ _auto_fallback_task: Optional[asyncio.Task] = None
 # Constants for retry logic
 MAX_AI_FALLBACK_RETRIES = 3
 
+# 转人工后人工超时未响应 → 自动恢复 AI 的等待分钟数
+# (platform.fallback_to_ai_timeout > 0 时优先用该配置, 0/空用此默认)
+MANUAL_SERVICE_FALLBACK_MINUTES = 30
+
 async def start_auto_fallback_to_ai_task(interval_seconds: int = 60):
     """Start the periodic auto fallback check task."""
     global _auto_fallback_task
@@ -52,6 +56,83 @@ async def stop_auto_fallback_to_ai_task():
         _auto_fallback_task = None
         logger.info("Stopped auto fallback to AI periodic task")
 
+async def _fallback_manual_service_timeouts(db: Session) -> None:
+    """转人工后人工超时未响应 → 自动恢复 AI 继续服务。
+
+    判定条件（全部满足才回落）:
+      - visitor.ai_disabled = true (已被转人工关闭 AI)
+      - 存在 open 会话, 且人工从未回复 (staff_message_count = 0)
+      - 会话最后活动超过超时时间 (platform.fallback_to_ai_timeout>0 优先, 默认 30 分钟)
+
+    恢复动作: ai_disabled=false + service_status 重置为 NEW (可再次转人工) + 站内提示
+    """
+    from app.models import VisitorServiceStatus, VisitorSession, SessionStatus
+
+    try:
+        visitors = db.query(Visitor).filter(
+            Visitor.ai_disabled.is_(True),
+            Visitor.deleted_at.is_(None),
+        ).all()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[FALLBACK] 查询转人工超时 visitor 失败: {e}")
+        return
+
+    now = datetime.utcnow()
+    for v in visitors:
+        try:
+            session = (
+                db.query(VisitorSession)
+                .filter(
+                    VisitorSession.visitor_id == v.id,
+                    VisitorSession.status == SessionStatus.OPEN.value,
+                )
+                .order_by(VisitorSession.created_at.desc())
+                .first()
+            )
+            if not session:
+                # 无 open 会话(人工已关闭/超时关闭) → 直接恢复 AI
+                pass
+            else:
+                # 人工回复过 → 人工正在处理, 不回落
+                if (session.staff_message_count or 0) > 0:
+                    continue
+                last_act = session.last_message_at or session.updated_at
+                if not last_act:
+                    continue
+                platform = None
+                if v.platform_id:
+                    platform = db.query(Platform).filter(Platform.id == v.platform_id).first()
+                timeout_min = (platform.fallback_to_ai_timeout or 0) if platform else 0
+                if timeout_min <= 0:
+                    timeout_min = MANUAL_SERVICE_FALLBACK_MINUTES
+                if (now - last_act).total_seconds() < timeout_min * 60:
+                    continue
+
+            # 恢复 AI 服务
+            v.ai_disabled = False
+            v.ai_fallback_retry_count = 0
+            v.service_status = VisitorServiceStatus.NEW.value
+            db.add(v)
+            db.commit()
+            logger.info(
+                f"[FALLBACK] 转人工超时回落: visitor={v.id} (人工超时未回复), AI 已恢复"
+            )
+            # 站内提示 (best-effort)
+            try:
+                channel_id = build_visitor_channel_id(v.id)
+                await wukongim_client.send_text_message(
+                    from_uid=f"{session.staff_id}-staff" if (session and session.staff_id) else "system",
+                    channel_id=channel_id,
+                    channel_type=CHANNEL_TYPE_CUSTOMER_SERVICE,
+                    content="人工坐席超时未响应，已自动恢复 AI 继续为您服务。",
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[FALLBACK] 处理 visitor {v.id} 回落失败: {e}")
+            db.rollback()
+
+
 async def check_and_fallback_to_ai():
     """
     Scheduled task to check for visitors waiting too long in 'assist' mode platforms
@@ -59,6 +140,10 @@ async def check_and_fallback_to_ai():
     """
     db: Session = SessionLocal()
     try:
+        # 0) 转人工超时回落: manual_service 转人工后人工 N 分钟未回复 → 恢复 AI
+        #    (不限 assist 模式; auto 模式平台转人工后同样适用)
+        await _fallback_manual_service_timeouts(db)
+
         # 1) Get platforms in assist mode with timeout > 0
         platforms = db.query(Platform).filter(
             Platform.ai_mode == "assist",
