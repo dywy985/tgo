@@ -21,7 +21,7 @@ _MANUAL_SERVICE_KW = ["转人工", "人工客服", "找人工", "人工服务", 
 _BUSINESS_KW = ["激活", "授权", "激活码", "工单", "价格", "多少钱", "购买", "买", "售后", "退货",
                 "换货", "物流", "快递", "发票", "客服", "人工", "怎么用", "如何使用", "故障", "报错",
                 "错误", "登录", "账号", "密码", "K6K8", "k6k8", "安装", "下载", "升级", "版本",
-                "到期", "续费", "退款", "套餐", "报价", "试用"]
+                "到期", "续费", "退款", "套餐", "报价", "试用", "加密狗", "注册机", "算号", "锁", "授权文件"]
 _QUESTION_KW = ["怎么", "如何", "请问", "为什么", "能不能", "有没有", "多少", "哪里", "什么", "能否", "是否"]
 _CHAT_KW = ["哈哈", "哈哈哈", "早上好", "晚上好", "中午好", "晚安", "收到", "在吗", "嗯嗯", "好的", "谢谢", "感谢", "哦"]
 
@@ -142,6 +142,10 @@ def _should_trigger(source_type: str, rec, trigger_cfg: dict | None) -> tuple[bo
         return False, "disabled"
     if score >= threshold:
         return True, f"score:{score}"
+    # 明确提问(含提问词) 且非闲聊 → 直接触发:
+    # 业务词库永远补不全, 客户在问问题就该答 (如 '怎么找加密狗' 只命中提问词 30 分 < 阈值被误杀)
+    if score >= 30 and any(kw in content for kw in (tc.get("question_kw") or _QUESTION_KW)):
+        return True, f"question:{score}"
     if score < 30:
         return False, f"score:{score}"
     # 模糊区 (30 <= score < threshold): llm_prefilter 开启时交给 LLM 预判 (后续实现)
