@@ -37,7 +37,14 @@ class ConditionNodeExecutor(BaseNodeExecutor):
             resolved_expr = context.resolve_template(expression)
             try:
                 # Use simple_eval instead of eval for safety
-                result = simple_eval(resolved_expr, names=context.data)
+                expression_names: Dict[str, Any] = {}
+                for path, value in context.data.items():
+                    reference_key, separator, variable_name = path.partition(".")
+                    if separator:
+                        expression_names.setdefault(reference_key, {})[variable_name] = value
+                    else:
+                        expression_names[path] = value
+                result = simple_eval(resolved_expr, names=expression_names)
             except Exception as e:
                 logger.error(f"Error evaluating expression '{resolved_expr}': {e}")
                 result = False
@@ -59,4 +66,3 @@ class ConditionNodeExecutor(BaseNodeExecutor):
             
         handle_id = "true" if result else "false"
         return {"result": result}, handle_id
-
