@@ -27,6 +27,7 @@ from ..schemas.files import (
     BatchUploadSummary
 )
 from ..schemas.common import ErrorResponse
+from ..services.document_integrity import build_integrity_metadata
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -206,7 +207,10 @@ async def upload_file(
         content_type=file.content_type,
         storage_provider="local",
         storage_path=storage_path,
-        storage_metadata={"original_path": storage_path},
+        storage_metadata={
+            "original_path": storage_path,
+            "integrity": build_integrity_metadata(content, file.filename, file.content_type),
+        },
         status="pending",
         language=language,
         description=description,
@@ -541,7 +545,10 @@ async def upload_files_batch(
                 content_type=file.content_type,
                 storage_provider="local",
                 storage_path=storage_path,
-                storage_metadata={"original_path": storage_path},
+                storage_metadata={
+                    "original_path": storage_path,
+                    "integrity": build_integrity_metadata(content, file.filename, file.content_type),
+                },
                 status="pending",
                 language=language,
                 description=description,

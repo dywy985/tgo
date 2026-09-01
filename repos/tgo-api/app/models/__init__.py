@@ -25,6 +25,7 @@ from app.models.visitor_assignment_history import VisitorAssignmentHistory, Assi
 from app.models.visitor_session import VisitorSession, SessionStatus
 from app.models.ticket import (
     Ticket,
+    TicketAttachment,
     TicketComment,
     TicketStatusHistory,
     TicketSettings,
@@ -79,6 +80,7 @@ __all__ = [
     "VisitorSession",
     "VisitorWaitingQueue",
     "Ticket",
+    "TicketAttachment",
     "TicketComment",
     "TicketStatusHistory",
     "TicketSettings",

@@ -18,7 +18,16 @@ export type TicketStatus =
   | 'rejected';
 
 export type TicketPriority = 'low' | 'normal' | 'high' | 'urgent';
-export type TicketSource = 'ai_auto' | 'manual_service' | 'staff_manual';
+export type TicketSource = 'ai_auto' | 'manual_service' | 'staff_manual' | 'public_form';
+
+export interface TicketAttachment {
+  id: string;
+  original_name: string;
+  content_type: string;
+  file_size: number;
+  sha256: string;
+  url: string;
+}
 
 export interface TicketSummary {
   reason?: string;
@@ -62,6 +71,9 @@ export interface Ticket {
   resolve_type?: string | null;
   ai_summary?: TicketSummary | null;
   custom_fields?: Record<string, unknown> | null;
+  contact_name?: string | null;
+  contact_phone?: string | null;
+  attachments?: TicketAttachment[];
   first_response_at?: string | null;
   resolved_at?: string | null;
   closed_at?: string | null;
@@ -203,6 +215,11 @@ class TicketsApiServiceClass extends BaseApiService {
 
   async getTicket(id: string): Promise<Ticket> {
     return this.get<Ticket>(this.endpoints.TICKET(id));
+  }
+
+  async getAttachmentBlob(url: string): Promise<Blob> {
+    const response = await this.getResponse(url);
+    return response.blob();
   }
 
   async createTicket(data: Partial<Ticket>): Promise<Ticket> {

@@ -107,6 +107,15 @@ class TicketListParams(BaseSchema):
     offset: int = Field(0, ge=0)
 
 
+class TicketAttachmentResponse(BaseSchema):
+    id: UUID
+    original_name: str
+    content_type: str
+    file_size: int
+    sha256: str
+    url: str
+
+
 class TicketResponse(BaseSchema):
     """工单详情."""
 
@@ -128,6 +137,9 @@ class TicketResponse(BaseSchema):
     resolve_type: Optional[str] = None
     ai_summary: Optional[Dict[str, Any]] = None
     custom_fields: Optional[Dict[str, Any]] = None
+    contact_name: Optional[str] = None
+    contact_phone: Optional[str] = None
+    attachments: List[TicketAttachmentResponse] = Field(default_factory=list)
     first_response_at: Optional[datetime] = None
     resolved_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None

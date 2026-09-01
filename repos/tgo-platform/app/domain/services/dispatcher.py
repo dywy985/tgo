@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import hashlib
 import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +10,11 @@ from app.db.models import Platform
 from app.domain.entities import NormalizedMessage, ChatCompletionRequest
 from app.domain.ports import TgoApiClient, SSEManager, PlatformAdapter
 from app.domain.services.adapters import SimpleStdoutAdapter, EmailAdapter, WeComAdapter, WeComBotAdapter, WeComReaderAdapter, WorkToolAdapter, FeishuBotAdapter, DingTalkBotAdapter, TelegramAdapter, SlackAdapter
+from app.domain.services.receipt_ack import InMemoryReceiptAckClaimStore, ReceiptAckService
+from app.domain.services.ticket_fallback import build_ticket_fallback_text
+
+
+_receipt_ack_service = ReceiptAckService(InMemoryReceiptAckClaimStore())
 
 
 def _expected_output_for(ptype: str) -> str | None:
@@ -50,6 +56,38 @@ def _default_system_message_for(ptype: str) -> str | None:
     if p == "telegram":
         return None
     return None
+
+
+def _message_context(msg: NormalizedMessage) -> tuple[str, str, str | None, bool]:
+    extra = msg.extra or {}
+    channel = extra.get("wecom_reader") or extra.get("wecom") or extra.get("telegram") or extra.get("feishu") or {}
+    conversation_id = str(
+        channel.get("chatid") or channel.get("chat_id") or channel.get("conversation_id") or msg.from_uid or "unknown"
+    )
+    message_id = str(extra.get("message_id") or extra.get("msgid") or channel.get("message_id") or "")
+    if not message_id:
+        raw = f"{msg.platform_id}:{conversation_id}:{msg.from_uid}:{msg.content}".encode("utf-8")
+        message_id = hashlib.sha256(raw).hexdigest()
+    group_key = channel.get("chatid") or channel.get("chat_id") or channel.get("conversation_id")
+    is_from_colleague = bool(channel.get("is_from_colleague", False))
+    return message_id, conversation_id, str(group_key) if group_key else None, is_from_colleague
+
+
+async def _send_ticket_fallback(
+    *, msg: NormalizedMessage, adapter: PlatformAdapter, tgo_api_client: TgoApiClient
+) -> str:
+    _, _, group_key, _ = _message_context(msg)
+    link = ""
+    try:
+        link = await tgo_api_client.create_public_ticket_link(
+            platform_api_key=msg.platform_api_key,
+            group_key=group_key,
+        )
+    except Exception:
+        logging.exception("[DISPATCH] failed to create public ticket link for platform_id=%s", msg.platform_id)
+    text = build_ticket_fallback_text(link)
+    await adapter.send_final({"text": text})
+    return text
 
 
 
@@ -202,6 +240,7 @@ async def process_message(
     """
     if not getattr(msg, "platform_api_key", None):
         raise RuntimeError("platform_api_key missing on NormalizedMessage")
+    adapter: PlatformAdapter | None = None
     for attempt in range(3):
         try:
             # Fetch platform by id only if needed for adapter selection/config
@@ -231,6 +270,24 @@ async def process_message(
             events = sse_manager.stream_events(frames)
 
             adapter = await select_adapter_for_target(msg, platform=platform) if platform else SimpleStdoutAdapter()
+
+            # WorkTool acknowledges at gateway ingress, before this dispatcher is reached.
+            # Other channels acknowledge here before starting the slow AI stream.
+            if attempt == 0 and ptype != "worktool":
+                message_id, conversation_id, _, is_from_colleague = _message_context(msg)
+                try:
+                    await _receipt_ack_service.send_if_due(
+                        adapter=adapter,
+                        platform_id=str(msg.platform_id),
+                        message_id=message_id,
+                        conversation_id=conversation_id,
+                        platform_config=platform.config if platform else {},
+                        is_from_colleague=is_from_colleague,
+                        source_type=ptype,
+                        msg_type=str((msg.extra or {}).get("msg_type") or "text"),
+                    )
+                except Exception:
+                    logging.exception("[DISPATCH] receipt acknowledgement failed; continuing AI request")
 
             if adapter.supports_stream:
                 async for ev in events:
@@ -287,13 +344,23 @@ async def process_message(
                     if et in {"workflow_completed", "team_run_completed", "workflow_failed", "agent_run_completed"}:
                         break
                 final = {"text": "".join(chunks)}
+                if not final["text"].strip():
+                    return await _send_ticket_fallback(
+                        msg=msg, adapter=adapter, tgo_api_client=tgo_api_client
+                    )
                 await adapter.send_final(final)
                 return (final.get("text") if isinstance(final, dict) else None)
         except Exception as e:
             if attempt == 2:
+                if adapter is not None:
+                    try:
+                        return await _send_ticket_fallback(
+                            msg=msg, adapter=adapter, tgo_api_client=tgo_api_client
+                        )
+                    except Exception:
+                        logging.exception("[DISPATCH] ticket fallback delivery failed")
                 raise
             logging.warning(
                 "[DISPATCH] attempt %s failed for platform_id=%s: %s", attempt + 1, msg.platform_id, e, exc_info=True
             )
             await asyncio.sleep(2 ** attempt)
-

@@ -18,6 +18,11 @@ class TgoApiClient(Protocol):
     async def chat_completion(self, req: ChatCompletionRequest) -> AsyncIterator[bytes]:
         """Open SSE stream by POSTing to tgo-api and yield raw event lines as bytes."""
 
+    async def create_public_ticket_link(
+        self, *, platform_api_key: str, group_key: str | None = None
+    ) -> str:
+        """Create a customer-facing ticket form URL."""
+
 
 class SSEManager(Protocol):
     async def stream_events(self, frames: AsyncIterator[bytes]) -> AsyncIterator[StreamEvent]: ...
@@ -32,4 +37,3 @@ class PlatformAdapter(ABC):
 
     @abstractmethod
     async def send_final(self, content: dict) -> None: ...
-

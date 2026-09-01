@@ -39,6 +39,10 @@ class Settings(BaseSettings):
         default="http://localhost:8000",
         description="Public-facing base URL for this TGO API service (used to construct callback URLs)"
     )
+    PUBLIC_APP_URL: str = Field(
+        default="http://localhost:5173",
+        description="Public web origin used for customer-facing ticket links",
+    )
 
     # Security
     SECRET_KEY: str = Field(

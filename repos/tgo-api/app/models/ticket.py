@@ -42,6 +42,7 @@ class TicketSource(str, Enum):
     AI_AUTO = "ai_auto"           # AI 会话判定未解决自动记录
     MANUAL_SERVICE = "manual_service"  # 转人工
     STAFF_MANUAL = "staff_manual"      # 坐席手动建单
+    PUBLIC_FORM = "public_form"        # 客户通过公开表单提交
 
 
 class TicketResolveType(str, Enum):
@@ -83,7 +84,7 @@ class Ticket(Base):
             name="chk_tickets_priority",
         ),
         CheckConstraint(
-            "source IN ('ai_auto', 'manual_service', 'staff_manual')",
+            "source IN ('ai_auto', 'manual_service', 'staff_manual', 'public_form')",
             name="chk_tickets_source",
         ),
         CheckConstraint(
@@ -114,6 +115,12 @@ class Ticket(Base):
     )
     custom_fields: Mapped[Optional[Dict[str, Any]]] = mapped_column(
         JSONB, nullable=True, comment="自定义字段值 {field_key: value}，字段定义见 api_ticket_settings.form_schema"
+    )
+    contact_name: Mapped[Optional[str]] = mapped_column(
+        String(100), nullable=True, comment="客户公开表单联系人"
+    )
+    contact_phone: Mapped[Optional[str]] = mapped_column(
+        String(32), nullable=True, comment="客户公开表单联系电话"
     )
 
     # 关联
@@ -154,6 +161,29 @@ class Ticket(Base):
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     deleted_at: Mapped[Optional[datetime]] = mapped_column(nullable=True, comment="Soft deletion timestamp")
+
+
+class TicketAttachment(Base):
+    """Image uploaded by a customer through the public ticket form."""
+
+    __tablename__ = "api_ticket_attachments"
+    __table_args__ = (
+        Index("ix_ticket_attachments_ticket_created", "ticket_id", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(
+        ForeignKey("api_projects.id", ondelete="CASCADE"), nullable=False
+    )
+    ticket_id: Mapped[UUID] = mapped_column(
+        ForeignKey("api_tickets.id", ondelete="CASCADE"), nullable=False
+    )
+    original_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    storage_path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    file_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
 
 
 class TicketComment(Base):

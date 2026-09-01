@@ -14,6 +14,7 @@ from app.api.v1.endpoints import (
     email,
     onboarding,
     platforms,
+    public_tickets,
     plugins,
     plugin_tools,
     projects,
@@ -101,6 +102,13 @@ api_router.include_router(
     tickets.router,
     prefix="/tickets",
     tags=["Tickets"]
+)
+
+# Token-authenticated customer ticket form (no staff login required)
+api_router.include_router(
+    public_tickets.router,
+    prefix="/public-tickets",
+    tags=["Public Tickets"],
 )
 
 api_router.include_router(

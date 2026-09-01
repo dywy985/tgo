@@ -76,6 +76,7 @@ const TicketDetailPage: React.FC = () => {
   const [commentText, setCommentText] = useState('');
   const [commentInternal, setCommentInternal] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
+  const [attachmentUrls, setAttachmentUrls] = useState<Record<string, string>>({});
 
   // 编辑模式
   const [editing, setEditing] = useState(false);
@@ -107,6 +108,31 @@ const TicketDetailPage: React.FC = () => {
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  useEffect(() => {
+    let active = true;
+    const createdUrls: string[] = [];
+    const loadAttachments = async () => {
+      const entries = await Promise.all(
+        (ticket?.attachments || []).map(async (attachment) => {
+          try {
+            const blob = await ticketsApiService.getAttachmentBlob(attachment.url);
+            const objectUrl = URL.createObjectURL(blob);
+            createdUrls.push(objectUrl);
+            return [attachment.id, objectUrl] as const;
+          } catch {
+            return [attachment.id, ''] as const;
+          }
+        }),
+      );
+      if (active) setAttachmentUrls(Object.fromEntries(entries));
+    };
+    loadAttachments();
+    return () => {
+      active = false;
+      createdUrls.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, [ticket?.id, ticket?.attachments]);
 
   // 支持列表页 ?edit=1 进入后自动打开编辑模式
   const [searchParams] = useSearchParams();
@@ -326,7 +352,7 @@ const TicketDetailPage: React.FC = () => {
                 <div>
                   <p className="text-gray-400">来源</p>
                   <p className="text-gray-700 dark:text-gray-300 font-medium">
-                    {ticket.source === 'manual_service' ? '转人工' : ticket.source === 'staff_manual' ? '手动创建' : 'AI 判定'}
+                    {ticket.source === 'manual_service' ? '转人工' : ticket.source === 'staff_manual' ? '手动创建' : ticket.source === 'public_form' ? '客户表单' : 'AI 判定'}
                   </p>
                 </div>
                 <div>
@@ -341,6 +367,18 @@ const TicketDetailPage: React.FC = () => {
                     </p>
                   </div>
                 )}
+                {ticket.contact_name && (
+                  <div>
+                    <p className="text-gray-400">联系人</p>
+                    <p className="text-gray-700 dark:text-gray-300 font-medium">{ticket.contact_name}</p>
+                  </div>
+                )}
+                {ticket.contact_phone && (
+                  <div>
+                    <p className="text-gray-400">联系电话</p>
+                    <p className="text-gray-700 dark:text-gray-300 font-medium">{ticket.contact_phone}</p>
+                  </div>
+                )}
                 {ticket.ai_summary?.reason && (
                   <div className="col-span-2 md:col-span-4">
                     <p className="text-gray-400">AI 判定</p>
@@ -348,6 +386,28 @@ const TicketDetailPage: React.FC = () => {
                   </div>
                 )}
               </div>
+              {ticket.attachments && ticket.attachments.length > 0 && (
+                <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-700">
+                  <p className="text-xs text-gray-400 mb-2">客户图片</p>
+                  <div className="flex flex-wrap gap-3">
+                    {ticket.attachments.map((attachment) => (
+                      attachmentUrls[attachment.id] ? (
+                        <a key={attachment.id} href={attachmentUrls[attachment.id]} target="_blank" rel="noreferrer" title={attachment.original_name}>
+                          <img
+                            src={attachmentUrls[attachment.id]}
+                            alt={attachment.original_name}
+                            className="h-28 w-28 rounded-lg border border-gray-200 dark:border-gray-700 object-cover"
+                          />
+                        </a>
+                      ) : (
+                        <div key={attachment.id} className="h-28 w-28 rounded-lg bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-xs text-gray-400">
+                          加载中
+                        </div>
+                      )
+                    ))}
+                  </div>
+                </div>
+              )}
               {/* 自定义字段展示 */}
               {ticket.custom_fields && Object.keys(ticket.custom_fields).length > 0 && (
                 <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-700 grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">

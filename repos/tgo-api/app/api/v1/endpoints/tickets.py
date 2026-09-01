@@ -6,19 +6,23 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import FileResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.logging import get_logger
 from app.core.security import get_current_active_user, require_permission
 from app.models import (
     Staff,
     Ticket,
+    TicketAttachment,
     TicketComment,
     TicketRoute,
     TicketSettings,
@@ -82,6 +86,23 @@ def _fill_display_names(db: Session, ticket: Ticket) -> TicketResponse:
         visitor = db.query(Visitor).filter(Visitor.id == ticket.visitor_id, Visitor.deleted_at.is_(None)).first()
         if visitor:
             resp.visitor_name = visitor.nickname or visitor.name or getattr(visitor, "name", None)
+    attachments = (
+        db.query(TicketAttachment)
+        .filter(TicketAttachment.ticket_id == ticket.id, TicketAttachment.project_id == ticket.project_id)
+        .order_by(TicketAttachment.created_at.asc())
+        .all()
+    )
+    resp.attachments = [
+        {
+            "id": item.id,
+            "original_name": item.original_name,
+            "content_type": item.content_type,
+            "file_size": item.file_size,
+            "sha256": item.sha256,
+            "url": f"/v1/tickets/attachments/{item.id}",
+        }
+        for item in attachments
+    ]
     return resp
 
 
@@ -553,6 +574,36 @@ def _get_owned_ticket(db: Session, project_id: UUID, ticket_id: UUID) -> Ticket:
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
     return ticket
+
+
+@router.get("/attachments/{attachment_id}", response_class=FileResponse)
+async def get_ticket_attachment(
+    attachment_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: Staff = Depends(require_permission("tickets:read")),
+) -> FileResponse:
+    """Download a customer-submitted ticket image with tenant authorization."""
+    attachment = (
+        db.query(TicketAttachment)
+        .filter(
+            TicketAttachment.id == attachment_id,
+            TicketAttachment.project_id == current_user.project_id,
+        )
+        .first()
+    )
+    if attachment is None:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    base_dir = Path(settings.UPLOAD_BASE_DIR).resolve()
+    file_path = (base_dir / attachment.storage_path).resolve()
+    if base_dir not in file_path.parents or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Attachment file not found")
+    return FileResponse(
+        path=file_path,
+        media_type=attachment.content_type,
+        filename=attachment.original_name,
+        content_disposition_type="inline",
+    )
 
 
 @router.get("/{ticket_id}", response_model=TicketResponse)

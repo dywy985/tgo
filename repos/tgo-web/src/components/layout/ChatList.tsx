@@ -23,6 +23,7 @@ import { useToast } from '@/hooks/useToast';
 import { showApiError } from '@/utils/toastHelpers';
 import { PlatformType } from '@/types';
 import type { ChannelVisitorExtra, ChannelInfo } from '@/types';
+import { attachUnansweredState, sortChatsByAttention } from '@/utils/chatSort';
 
 // ============================================================================
 // Main Component
@@ -60,17 +61,6 @@ const useSearchFiltering = (chats: Chat[], searchQuery: string) => {
       return name.includes(lowerQuery) || chat.lastMessage.toLowerCase().includes(lowerQuery);
     });
   }, [chats, searchQuery]);
-};
-
-/**
- * Sort chats by timestamp (desc)
- */
-const sortChatsByTimestamp = (chats: Chat[]): Chat[] => {
-  return [...chats].sort((a, b) => {
-    const aSec = a.lastTimestampSec ?? (a.timestamp ? Math.floor(new Date(a.timestamp).getTime() / 1000) : 0);
-    const bSec = b.lastTimestampSec ?? (b.timestamp ? Math.floor(new Date(b.timestamp).getTime() / 1000) : 0);
-    return bSec - aSec;
-  });
 };
 
 import { normalizeTagHex, hexToRgba } from '@/utils/tagUtils';
@@ -227,8 +217,10 @@ const ChatListComponent: React.FC<ChatListProps> = ({
         tag_ids: mineTagIds.length > 0 ? mineTagIds : undefined,
       });
       if (response?.conversations) {
-        const chats = response.conversations.map(conv => convertWuKongIMToChat(conv));
-        setMyChats(sortChatsByTimestamp(chats));
+        const chats = attachUnansweredState(
+          response.conversations.map(conv => convertWuKongIMToChat(conv)), response.channels
+        );
+        setMyChats(sortChatsByAttention(chats));
         console.log(`📋 ChatList: Loaded "mine" tab, ${chats.length} conversations`);
         
         // 缓存频道信息，避免后续单独请求
@@ -347,8 +339,10 @@ const ChatListComponent: React.FC<ChatListProps> = ({
     try {
       const response = await conversationsApi.getWaitingConversations(20, PAGE_SIZE, 0);
       if (response?.conversations) {
-        const chats = response.conversations.map(conv => convertWuKongIMToChat(conv));
-        setUnassignedChats(sortChatsByTimestamp(chats));
+        const chats = attachUnansweredState(
+          response.conversations.map(conv => convertWuKongIMToChat(conv)), response.channels
+        );
+        setUnassignedChats(sortChatsByAttention(chats));
         setHasMoreUnassigned(response.pagination?.has_next ?? false);
         console.log(`📋 ChatList: Loaded "unassigned" tab, ${chats.length} conversations, hasMore: ${response.pagination?.has_next}`);
         
@@ -378,8 +372,10 @@ const ChatListComponent: React.FC<ChatListProps> = ({
       const offset = unassignedChats.length;
       const response = await conversationsApi.getWaitingConversations(20, PAGE_SIZE, offset);
       if (response?.conversations) {
-        const newChats = response.conversations.map(conv => convertWuKongIMToChat(conv));
-        setUnassignedChats(prev => [...prev, ...newChats]);
+        const newChats = attachUnansweredState(
+          response.conversations.map(conv => convertWuKongIMToChat(conv)), response.channels
+        );
+        setUnassignedChats(prev => sortChatsByAttention([...prev, ...newChats]));
         setHasMoreUnassigned(response.pagination?.has_next ?? false);
         console.log(`📋 ChatList: Loaded more "unassigned", +${newChats.length} conversations, hasMore: ${response.pagination?.has_next}`);
         
@@ -405,8 +401,10 @@ const ChatListComponent: React.FC<ChatListProps> = ({
     try {
       const response = await conversationsApi.getAllConversations(20, PAGE_SIZE, 0, { only_completed_recent: true });
       if (response?.conversations) {
-        const chats = response.conversations.map(conv => convertWuKongIMToChat(conv));
-        setAllChats(sortChatsByTimestamp(chats));
+        const chats = attachUnansweredState(
+          response.conversations.map(conv => convertWuKongIMToChat(conv)), response.channels
+        );
+        setAllChats(sortChatsByAttention(chats));
         setHasMoreAll(response.pagination?.has_next ?? false);
         console.log(`📋 ChatList: Loaded "all" tab, ${chats.length} conversations, hasMore: ${response.pagination?.has_next}`);
         
@@ -436,8 +434,10 @@ const ChatListComponent: React.FC<ChatListProps> = ({
       const offset = allChats.length;
       const response = await conversationsApi.getAllConversations(20, PAGE_SIZE, offset, { only_completed_recent: true });
       if (response?.conversations) {
-        const newChats = response.conversations.map(conv => convertWuKongIMToChat(conv));
-        setAllChats(prev => [...prev, ...newChats]);
+        const newChats = attachUnansweredState(
+          response.conversations.map(conv => convertWuKongIMToChat(conv)), response.channels
+        );
+        setAllChats(prev => sortChatsByAttention([...prev, ...newChats]));
         setHasMoreAll(response.pagination?.has_next ?? false);
         console.log(`📋 ChatList: Loaded more "all", +${newChats.length} conversations, hasMore: ${response.pagination?.has_next}`);
         
@@ -468,8 +468,10 @@ const ChatListComponent: React.FC<ChatListProps> = ({
         offset: 0,
       });
       if (response?.conversations) {
-        const chats = response.conversations.map(conv => convertWuKongIMToChat(conv));
-        setManualChats(sortChatsByTimestamp(chats));
+        const chats = attachUnansweredState(
+          response.conversations.map(conv => convertWuKongIMToChat(conv)), response.channels
+        );
+        setManualChats(sortChatsByAttention(chats));
         setHasMoreManual(response.pagination?.has_next ?? false);
         console.log(`📋 ChatList: Loaded "manual" tab, ${chats.length} conversations, hasMore: ${response.pagination?.has_next}`);
 
@@ -501,8 +503,10 @@ const ChatListComponent: React.FC<ChatListProps> = ({
         offset,
       });
       if (response?.conversations) {
-        const newChats = response.conversations.map(conv => convertWuKongIMToChat(conv));
-        setManualChats(prev => [...prev, ...newChats]);
+        const newChats = attachUnansweredState(
+          response.conversations.map(conv => convertWuKongIMToChat(conv)), response.channels
+        );
+        setManualChats(prev => sortChatsByAttention([...prev, ...newChats]));
         setHasMoreManual(response.pagination?.has_next ?? false);
 
         if (response.channels && response.channels.length > 0) {
@@ -718,7 +722,7 @@ const ChatListComponent: React.FC<ChatListProps> = ({
     );
     
     // 合并并排序
-    return sortChatsByTimestamp([...mergedFromApi, ...newRealtimeChats]);
+    return sortChatsByAttention([...mergedFromApi, ...newRealtimeChats]);
   }, [myChats, realtimeChats, mineTagIds, tagFilterBypassKeys]);
 
   // 当开启标签筛选时，实时新会话若缺少 channelInfo.extra.tags，会被隐藏；
@@ -822,7 +826,7 @@ const ChatListComponent: React.FC<ChatListProps> = ({
 
   // "已完成"会话：仅使用 API 返回结果（不合并实时会话，避免把活跃会话混入“已完成”）
   const mergedAllChats = useMemo(() => {
-    return sortChatsByTimestamp(allChats);
+    return sortChatsByAttention(allChats);
   }, [allChats]);
 
   // Get the appropriate chat list based on active tab

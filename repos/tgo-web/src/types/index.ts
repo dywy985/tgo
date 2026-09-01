@@ -769,6 +769,8 @@ export interface Chat {
   lastTimestampSec?: number;
   status: ChatStatus;
   unreadCount: number;
+  /** Customer/group message is still awaiting a staff or AI reply. */
+  isUnanswered?: boolean;
 
   // Flattened WuKongIM metadata
   channelId: string;

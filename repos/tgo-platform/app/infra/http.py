@@ -18,6 +18,16 @@ class HttpxTgoApiClient(TgoApiClient):
                 if line:
                     yield line.encode()
 
+    async def create_public_ticket_link(
+        self, *, platform_api_key: str, group_key: str | None = None
+    ) -> str:
+        response = await self._client.post(
+            "/v1/public-tickets/links",
+            headers={"X-Platform-API-Key": platform_api_key},
+            json={"group_key": group_key, "expires_in_seconds": 86400},
+        )
+        response.raise_for_status()
+        return str(response.json().get("url") or "")
+
     async def aclose(self) -> None:
         await self._client.aclose()
-
