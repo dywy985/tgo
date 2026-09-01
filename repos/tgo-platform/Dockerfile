@@ -37,7 +37,10 @@ ENV POETRY_NO_INTERACTION=1 \
 
 # Python deps first (for layer cache)
 COPY pyproject.toml poetry.lock* ./
-RUN poetry install --only=main --no-root && rm -rf "$POETRY_CACHE_DIR"
+RUN poetry export --only=main --without-hashes --format=requirements.txt --output=requirements.txt \
+    && python -m venv .venv \
+    && .venv/bin/pip install --no-cache-dir -r requirements.txt \
+    && rm -rf "$POETRY_CACHE_DIR"
 
 # App code (for Alembic/env, etc.)
 COPY . .
