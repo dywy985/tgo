@@ -236,7 +236,8 @@ services:
       - .env.dev
     environment:
       CHOKIDAR_USEPOLLING: "true"
-      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
+      NODE_OPTIONS: "--max-old-space-size=1536"
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8008}
       VITE_WIDGET_PREVIEW_URL: ${VITE_WIDGET_PREVIEW_URL:-http://localhost:5174}
       VITE_WIDGET_SCRIPT_BASE: ${VITE_WIDGET_SCRIPT_BASE:-http://localhost:5174/tgo-widget-sdk.js}
       VITE_WIDGET_DEMO_URL: ${VITE_WIDGET_DEMO_URL:-http://localhost:5174/demo.html}
