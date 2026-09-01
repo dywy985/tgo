@@ -43,6 +43,7 @@ from app.schemas import (
     TicketStatusChange,
     TicketUpdate,
 )
+from app.services.ticket_service import generate_ticket_number
 
 logger = get_logger("endpoints.tickets")
 router = APIRouter()
