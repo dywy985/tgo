@@ -188,6 +188,7 @@ secrets/
 
 # Large files
 *.zip
+!nltk_packages/*.zip
 *.tar.gz
 *.rar
 *.7z

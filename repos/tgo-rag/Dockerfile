@@ -65,9 +65,9 @@ COPY pyproject.toml poetry.lock* ./
 RUN --mount=type=cache,target=/tmp/poetry_cache \
     poetry install --only=main --no-root
 
-# Download NLTK data (cached layer)
-# Download NLTK data (cached layer)
+# Download NLTK data (uses pre-fetched verified archives when present)
 COPY download_nltk.py /app/download_nltk.py
+COPY nltk_packages /app/nltk_packages
 RUN .venv/bin/python /app/download_nltk.py
 
 # =========================
