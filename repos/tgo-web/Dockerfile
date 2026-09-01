@@ -39,7 +39,8 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 
 # Copy entrypoint script (generates runtime config from environment variables)
 COPY docker-entrypoint.sh /docker-entrypoint.sh
-RUN chmod +x /docker-entrypoint.sh
+RUN sed -i 's/\r$//' /docker-entrypoint.sh \
+    && chmod +x /docker-entrypoint.sh
 
 # Copy nginx config (SPA fallback + real IP forwarding)
 COPY nginx.conf /etc/nginx/conf.d/default.conf
