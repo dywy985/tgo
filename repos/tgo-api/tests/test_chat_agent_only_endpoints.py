@@ -99,7 +99,7 @@ async def test_chat_completion_prefers_platform_agent_id(monkeypatch) -> None:
     monkeypatch.setattr(
         chat_endpoints.chat_service,
         "is_ai_disabled",
-        lambda _platform, _visitor: False,
+        lambda _db, _platform, _visitor: False,
     )
     monkeypatch.setattr(
         chat_endpoints.chat_service,
@@ -176,7 +176,7 @@ async def test_chat_completion_omits_agent_id_without_platform_override(
     monkeypatch.setattr(
         chat_endpoints.chat_service,
         "is_ai_disabled",
-        lambda _platform, _visitor: False,
+        lambda _db, _platform, _visitor: False,
     )
     monkeypatch.setattr(
         chat_endpoints.chat_service,

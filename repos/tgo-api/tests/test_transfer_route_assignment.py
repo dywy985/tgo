@@ -71,7 +71,7 @@ def _staff(is_active=True, service_paused=False):
 
 
 def run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 def test_route_hit_serviceable_direct_assign():
