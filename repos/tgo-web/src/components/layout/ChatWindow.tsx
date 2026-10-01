@@ -8,9 +8,9 @@ import { useWuKongIMWebSocket } from '@/hooks/useWuKongIMWebSocket';
 import { useChatStore } from '@/stores/chatStore';
 import { useAuthStore } from '@/stores/authStore';
 import { useChannelStore } from '@/stores/channelStore';
-import type { Chat, Message, ChannelVisitorExtra } from '@/types';
-import { PlatformType, MessagePayloadType } from '@/types';
+import { PlatformType, MessagePayloadType, type Chat, type Message, type ChannelVisitorExtra } from '@/types';
 import { chatMessagesApiService } from '@/services/chatMessagesApi';
+import { visitorApiService } from '@/services/visitorApi';
 import { useToast } from '@/hooks/useToast';
 import { showApiError } from '@/utils/toastHelpers';
 import { useTranslation } from 'react-i18next';
@@ -155,6 +155,17 @@ const ChatWindow: React.FC<ChatWindowProps> = React.memo(({ activeChat, onSendMe
           return;
         }
 
+        // Customer service channels are all labelled "website" in the generic
+        // conversation list. Resolve their actual platform before sending.
+        let outboundPlatformType = platformType;
+        if (!outboundPlatformType && channelType === 251 && channelId.endsWith('-vtr')) {
+          const visitor = await visitorApiService.getVisitor(channelId.slice(0, -4));
+          if (Object.values(PlatformType).includes(visitor.platform_type as PlatformType)) {
+            outboundPlatformType = visitor.platform_type as PlatformType;
+          }
+        }
+        if (!outboundPlatformType) throw new Error('无法确认会话平台，消息未发送');
+
         // For regular visitor chats: add local message for immediate UI feedback
         const localMessage: Message = {
           id: nowId,
@@ -176,7 +187,7 @@ const ChatWindow: React.FC<ChatWindowProps> = React.memo(({ activeChat, onSendMe
         moveConversationToTop(channelId, channelType);
 
         // If non-website platform, send via REST first
-        if (platformType && platformType !== PlatformType.WEBSITE) {
+        if (outboundPlatformType !== PlatformType.WEBSITE) {
           try {
             await chatMessagesApiService.staffSendPlatformMessage({
               channel_id: channelId,
@@ -223,11 +234,6 @@ const ChatWindow: React.FC<ChatWindowProps> = React.memo(({ activeChat, onSendMe
       setIsSending(false);
     }
   }, [isWuKongIMChat, channelId, channelType, isConnected, isAIChat, user, addMessage, updateConversationLastMessage, moveConversationToTop, platformType, onSendMessage, sendWsMessage, updateMessageByClientMsgNo, showToast, t]);
-
-  // Handle empty state when no chat is selected
-  if (!activeChat) {
-    return <EmptyState type="no-chat" />;
-  }
 
   // Target message jump & highlight from SearchPanel
   const targetLoc = useChatStore(state => state.targetMessageLocation);
@@ -277,6 +283,8 @@ const ChatWindow: React.FC<ChatWindowProps> = React.memo(({ activeChat, onSendMe
   // We want to re-run when target changes or conversation changes
   }, [isWuKongIMChat, channelId, channelType, targetLoc, loadMessageContext, clearHistoricalMessages, setLoadingHistory, setTargetMessageLocation, showToast, t]);
 
+  if (!activeChat) return <EmptyState type="no-chat" />;
+
   return (
     <main className="flex-grow flex flex-col bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-800">
       {/* Chat Header */}
@@ -311,6 +319,7 @@ const ChatWindow: React.FC<ChatWindowProps> = React.memo(({ activeChat, onSendMe
         onSendMessage={handleSendMessage}
         isSending={isSending}
         onAcceptVisitor={onAcceptVisitor}
+        platformTypeHint={platformType}
       />
     </main>
   );

@@ -60,6 +60,64 @@ export interface PlatformUpdateRequest {
   fallback_to_ai_timeout?: number | null;
 }
 
+export interface PlatformConnectionConfig {
+  platform_id: string;
+  type: 'worktool' | 'wecom_bot';
+  state: 'draft' | 'active';
+  version: number;
+  draft: Record<string, any>;
+  active: Record<string, any>;
+  has_draft_credentials: boolean;
+  has_active_credentials: boolean;
+  cutover_at?: string | null;
+}
+
+export interface PlatformConnectionStatus {
+  platform_id: string;
+  type: 'worktool' | 'wecom_bot';
+  state: string;
+  severity: 'ok' | 'warning' | 'critical';
+  version: number;
+  config_version?: number;
+  cutover_at?: string | null;
+  reason?: string;
+  devices?: WorkToolDeviceStatus[];
+  error?: string;
+  data_complete?: boolean;
+  gaps?: Array<{ device_id?: string | null; reason: string; started_at: string; ended_at?: string | null }>;
+}
+
+export interface WorkToolDeviceStatus {
+  robot_id: string;
+  name?: string;
+  online?: boolean;
+  last_seen?: number;
+  last_message_at?: number | null;
+  pending_sends?: number;
+  pending_media_uploads?: number;
+  last_media_upload_at?: number | null;
+  last_capture_source?: 'cache' | 'screen_crop' | 'recovered_cache' | 'recovered_screen_crop' | null;
+  capture_mode?: string;
+  last_error?: string | null;
+}
+
+export interface PlatformResetPreview {
+  platform_id: string;
+  platform_name: string;
+  preview_job_id: string;
+  confirmation_token: string;
+  cutoff_utc: string;
+  counts: Record<string, number>;
+  target_id_summary: string[];
+  requires_backup: boolean;
+  preserves: string[];
+}
+export interface MonitorTicketCleanupPreview {
+  platform_id: string; platform_name: string; ticket_count: number; requires_backup: boolean;
+  tickets: Array<{id: string; number: string; title: string; created_at: string; attachment_count: number}>;
+  preserves: string[];
+}
+
 
 /**
  * Platforms API Service
@@ -78,6 +136,15 @@ class PlatformsApiService extends BaseApiService {
     ENABLE: (id: string) => `/${this.apiVersion}/platforms/${id}/enable`,
     DISABLE: (id: string) => `/${this.apiVersion}/platforms/${id}/disable`,
     UPLOAD_LOGO: (id: string) => `/${this.apiVersion}/platforms/${id}/logo`,
+    CONNECTION_CONFIG: (id: string) => `/${this.apiVersion}/platforms/${id}/connection-config`,
+    CONNECTION_TEST: (id: string) => `/${this.apiVersion}/platforms/${id}/connection-test`,
+    CONNECTION_ACTIVATE: (id: string) => `/${this.apiVersion}/platforms/${id}/activate`,
+    CONNECTION_STATUS: (id: string) => `/${this.apiVersion}/platforms/${id}/connection-status`,
+    RESET_PREVIEW: (id: string) => `/${this.apiVersion}/platforms/${id}/data-reset/preview`,
+    RESET_EXECUTE: (id: string) => `/${this.apiVersion}/platforms/${id}/data-reset`,
+    RESET_STATUS: (id: string, jobId: string) => `/${this.apiVersion}/platforms/${id}/data-reset/${jobId}`,
+    MONITOR_TICKET_PREVIEW: (id: string) => `/${this.apiVersion}/platforms/${id}/reply-monitor-ticket-cleanup/preview`,
+    MONITOR_TICKET_CLEANUP: (id: string) => `/${this.apiVersion}/platforms/${id}/reply-monitor-ticket-cleanup`,
   } as const;
 
   private static typesCache: { data: PlatformTypeDefinitionResponse[]; ts: number } | null = null;
@@ -174,6 +241,50 @@ class PlatformsApiService extends BaseApiService {
   async disablePlatform(id: string): Promise<void> {
     const endpoint = this.endpoints.DISABLE(id);
     await this.post<void>(endpoint, {});
+  }
+
+  async getConnectionConfig(id: string): Promise<PlatformConnectionConfig> {
+    return this.get<PlatformConnectionConfig>(this.endpoints.CONNECTION_CONFIG(id));
+  }
+
+  async saveConnectionDraft(id: string, config: Record<string, any>): Promise<PlatformConnectionConfig> {
+    return this.patch<PlatformConnectionConfig>(this.endpoints.CONNECTION_CONFIG(id), { config });
+  }
+
+  async testConnection(id: string): Promise<Record<string, any>> {
+    return this.post<Record<string, any>>(this.endpoints.CONNECTION_TEST(id), {});
+  }
+
+  async activateConnection(id: string): Promise<PlatformConnectionConfig> {
+    return this.post<PlatformConnectionConfig>(this.endpoints.CONNECTION_ACTIVATE(id), {});
+  }
+
+  async getConnectionStatus(id: string): Promise<PlatformConnectionStatus> {
+    return this.get<PlatformConnectionStatus>(this.endpoints.CONNECTION_STATUS(id));
+  }
+
+  async previewDataReset(id: string): Promise<PlatformResetPreview> {
+    return this.get<PlatformResetPreview>(`${this.endpoints.RESET_PREVIEW(id)}?cutoff=${encodeURIComponent('2026-09-04T00:00:00+08:00')}`);
+  }
+
+  async executeDataReset(id: string, preview: PlatformResetPreview): Promise<Record<string, any>> {
+    return this.post<Record<string, any>>(this.endpoints.RESET_EXECUTE(id), {
+      preview_job_id: preview.preview_job_id,
+      confirmation_token: preview.confirmation_token,
+      cutoff: '2026-09-04T00:00:00+08:00',
+    });
+  }
+
+  async previewMonitorTicketCleanup(id: string): Promise<MonitorTicketCleanupPreview> {
+    return this.get<MonitorTicketCleanupPreview>(this.endpoints.MONITOR_TICKET_PREVIEW(id));
+  }
+
+  async executeMonitorTicketCleanup(id: string, confirmation: string): Promise<Record<string, any>> {
+    return this.post<Record<string, any>>(this.endpoints.MONITOR_TICKET_CLEANUP(id), { confirmation });
+  }
+
+  async getDataResetStatus(id: string, jobId: string): Promise<Record<string, any>> {
+    return this.get<Record<string, any>>(this.endpoints.RESET_STATUS(id, jobId));
   }
 }
 

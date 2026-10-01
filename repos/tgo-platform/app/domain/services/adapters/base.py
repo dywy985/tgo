@@ -12,8 +12,7 @@ class SimpleStdoutAdapter(BasePlatformAdapter):
     """Minimal adapter for MVP/testing. Prints incremental/final outputs."""
 
     async def send_incremental(self, ev: StreamEvent) -> None:  # pragma: no cover - side effect
-        print(f"[INCR] event={ev.event} payload={ev.payload}")
+        print(f"[INCR] event={ev.event}")
 
     async def send_final(self, content: dict) -> None:  # pragma: no cover - side effect
-        print(f"[FINAL] content={content}")
-
+        print(f"[FINAL] content_length={len(content or '')}")

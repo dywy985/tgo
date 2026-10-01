@@ -3,12 +3,10 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import Icon from '@/components/ui/Icon';
 import Pagination from '@/components/ui/Pagination';
-import TicketDynamicForm, { type DynamicFormValues } from '@/components/tickets/TicketDynamicForm';
 import { useAuthStore } from '@/stores/authStore';
 import {
   ticketsApiService,
   type Ticket,
-  type TicketFormField,
   type TicketListQuery,
   type TicketPriority,
   type TicketStatus,
@@ -20,12 +18,9 @@ import {
 
 const STATUS_OPTIONS: Array<{ value: TicketStatus | ''; label: string }> = [
   { value: '', label: '全部状态' },
-  { value: 'open', label: '未处理' },
-  { value: 'pending_human', label: '待人工' },
-  { value: 'processing', label: '处理中' },
-  { value: 'resolved', label: '已解决' },
-  { value: 'closed', label: '已归档' },
-  { value: 'rejected', label: '已拒绝' },
+  { value: 'pending_reply', label: '待回复' },
+  { value: 'replied', label: '已回复' },
+  { value: 'archived', label: '已归档' },
 ];
 
 const PRIORITY_OPTIONS: Array<{ value: TicketPriority | ''; label: string }> = [
@@ -38,25 +33,10 @@ const PRIORITY_OPTIONS: Array<{ value: TicketPriority | ''; label: string }> = [
 
 const PAGE_SIZE = 20;
 
-const CREATE_BUILTIN_KEYS = ['title', 'description', 'category', 'priority', 'assignee_id', 'visitor_id', 'group_key'];
-
-function splitCreateValues(values: DynamicFormValues): {
-  builtin: Record<string, unknown>;
-  custom_fields: Record<string, unknown>;
-} {
-  const builtin: Record<string, unknown> = {};
-  const custom_fields: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(values)) {
-    if (v === '' || v === null || v === undefined) continue;
-    if (CREATE_BUILTIN_KEYS.includes(k)) builtin[k] = v;
-    else custom_fields[k] = v;
-  }
-  return { builtin, custom_fields };
-}
-
 const TicketsPage: React.FC = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const isAdmin = useAuthStore((state) => state.user?.role === 'admin');
 
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [total, setTotal] = useState(0);
@@ -70,13 +50,7 @@ const TicketsPage: React.FC = () => {
   const [keyword, setKeyword] = useState('');
   const [myOnly, setMyOnly] = useState(false);
   const [page, setPage] = useState(0);
-
-  // 新建工单弹窗
-  const [showCreate, setShowCreate] = useState(false);
-  const [createSchema, setCreateSchema] = useState<TicketFormField[]>([]);
-  const [createValues, setCreateValues] = useState<DynamicFormValues>({});
-  const [createError, setCreateError] = useState('');
-  const [creating, setCreating] = useState(false);
+  const [rowActionId, setRowActionId] = useState<string | null>(null);
 
   const fetchTickets = useCallback(async () => {
     setLoading(true);
@@ -115,55 +89,6 @@ const TicketsPage: React.FC = () => {
       });
   }, []);
 
-  // 打开新建弹窗（加载表单模板）
-  const openCreate = async () => {
-    setCreateError('');
-    setCreateValues({});
-    try {
-      const s = await ticketsApiService.getSettings();
-      setCreateSchema(s.form_schema || []);
-    } catch {
-      setCreateSchema([]);
-    }
-    setShowCreate(true);
-  };
-
-  const submitCreate = async () => {
-    setCreateError('');
-    setCreating(true);
-    try {
-      const { builtin, custom_fields } = splitCreateValues(createValues);
-      // 必填校验（前端简单版，后端兜底）
-      const requiredMissing = (createSchema || [])
-        .filter((f) => f.required)
-        .some((f) => {
-          const v = createValues[f.key];
-          return v === undefined || v === null || v === '' || (Array.isArray(v) && v.length === 0);
-        });
-      if (requiredMissing) {
-        setCreateError('存在必填字段未填写');
-        setCreating(false);
-        return;
-      }
-      await ticketsApiService.createTicketWithFields({
-        title: String(builtin.title ?? ''),
-        description: String(builtin.description ?? ''),
-        category: String(builtin.category ?? 'other'),
-        priority: String(builtin.priority ?? 'normal'),
-        source: 'staff_manual',
-        group_key: builtin.group_key ? String(builtin.group_key) : undefined,
-        custom_fields: Object.keys(custom_fields).length > 0 ? custom_fields : undefined,
-      });
-      setShowCreate(false);
-      setPage(0);
-      fetchTickets();
-    } catch (err) {
-      setCreateError(err instanceof Error ? err.message : '创建失败');
-    } finally {
-      setCreating(false);
-    }
-  };
-
   const handleSearch = () => {
     setPage(0);
     fetchTickets();
@@ -175,6 +100,33 @@ const TicketsPage: React.FC = () => {
     setCategory('');
     setKeyword('');
     setPage(0);
+  };
+
+  const handleStatusChange = async (ticket: Ticket, nextStatus: TicketStatus) => {
+    setRowActionId(ticket.id);
+    setError('');
+    try {
+      await ticketsApiService.changeStatus(ticket.id, nextStatus, '管理员在工单列表手动调整');
+      await fetchTickets();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '状态修改失败');
+    } finally {
+      setRowActionId(null);
+    }
+  };
+
+  const handleDelete = async (ticket: Ticket) => {
+    if (!window.confirm(`确定删除工单 ${ticket.number} 吗？删除后将不再显示。`)) return;
+    setRowActionId(ticket.id);
+    setError('');
+    try {
+      await ticketsApiService.deleteTicket(ticket.id);
+      await fetchTickets();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '删除失败');
+    } finally {
+      setRowActionId(null);
+    }
   };
 
   const totalPages = Math.ceil(total / PAGE_SIZE);
@@ -192,7 +144,7 @@ const TicketsPage: React.FC = () => {
               {t('ticket.management.title', '工单管理')}
             </h1>
             <p className="text-xs text-gray-500 dark:text-gray-400">
-              {t('ticket.management.subtitle', '跟踪需要处理的问题：转人工 / 未解决 / 待提醒')}
+              {t('ticket.management.subtitle', '跟踪客户消息是否获得人工回复')}
             </p>
           </div>
         </div>
@@ -210,12 +162,6 @@ const TicketsPage: React.FC = () => {
             title="刷新"
           >
             <Icon name="RefreshCw" size={18} />
-          </button>
-          <button
-            onClick={openCreate}
-            className="px-3 py-2 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
-          >
-            新建工单
           </button>
           <button
             onClick={() => navigate('/settings/tickets')}
@@ -348,9 +294,24 @@ const TicketsPage: React.FC = () => {
                     {tk.assignee_name || '—'}
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap">
-                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${TICKET_STATUS_COLORS[tk.status]}`}>
-                      {TICKET_STATUS_LABELS[tk.status]}
-                    </span>
+                    {isAdmin ? (
+                      <select
+                        aria-label={`设置工单 ${tk.number} 状态`}
+                        value={tk.status}
+                        disabled={rowActionId === tk.id}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => handleStatusChange(tk, e.target.value as TicketStatus)}
+                        className={`rounded-md border-0 px-2 py-1 text-xs font-medium disabled:opacity-50 ${TICKET_STATUS_COLORS[tk.status]}`}
+                      >
+                        {STATUS_OPTIONS.filter((option) => option.value).map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${TICKET_STATUS_COLORS[tk.status]}`}>
+                        {TICKET_STATUS_LABELS[tk.status]}
+                      </span>
+                    )}
                   </td>
                   <td className={`px-4 py-3 whitespace-nowrap ${TICKET_PRIORITY_COLORS[tk.priority]}`}>
                     {TICKET_PRIORITY_LABELS[tk.priority]}
@@ -358,13 +319,22 @@ const TicketsPage: React.FC = () => {
                   <td className="px-4 py-3 text-gray-500 dark:text-gray-400 whitespace-nowrap">
                     {new Date(tk.created_at).toLocaleString('zh-CN', { hour12: false })}
                   </td>
-                  <td className="px-4 py-3 whitespace-nowrap">
+                  <td className="px-4 py-3 whitespace-nowrap space-x-2">
                     <button
                       onClick={(e) => { e.stopPropagation(); navigate(`/tickets/${tk.id}?edit=1`); }}
                       className="px-2.5 py-1 text-xs font-medium text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 hover:bg-blue-100 dark:hover:bg-blue-900/50 rounded-md"
                     >
                       编辑
                     </button>
+                    {isAdmin && (
+                      <button
+                        disabled={rowActionId === tk.id}
+                        onClick={(e) => { e.stopPropagation(); void handleDelete(tk); }}
+                        className="px-2.5 py-1 text-xs font-medium text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/30 hover:bg-red-100 dark:hover:bg-red-900/50 rounded-md disabled:opacity-50"
+                      >
+                        删除
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))
@@ -384,64 +354,6 @@ const TicketsPage: React.FC = () => {
         </div>
       )}
 
-      {/* 新建工单弹窗 */}
-      {showCreate && (
-        <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/40">
-          <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl w-full max-w-lg max-h-[85vh] overflow-auto m-4">
-            <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
-              <h2 className="text-base font-bold text-gray-900 dark:text-gray-100">新建工单</h2>
-              <button
-                onClick={() => setShowCreate(false)}
-                className="p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500"
-              >
-                <Icon name="X" size={18} />
-              </button>
-            </div>
-            <div className="p-6">
-              <TicketDynamicForm
-                fields={
-                  createSchema.length > 0
-                    ? createSchema
-                    : [
-                        { key: 'title', label: '标题', type: 'text', required: true, editable: true },
-                        { key: 'description', label: '问题描述', type: 'textarea', required: true, editable: true },
-                        { key: 'category', label: '分类', type: 'text', editable: true },
-                        {
-                          key: 'priority',
-                          label: '优先级',
-                          type: 'select',
-                          options: ['low', 'normal', 'high', 'urgent'],
-                          editable: true,
-                        },
-                      ]
-                }
-                values={createValues}
-                onChange={(key: string, value: unknown) => setCreateValues((prev: DynamicFormValues) => ({ ...prev, [key]: value }))}
-              />
-              {createError && (
-                <p className="mt-3 text-xs text-red-600 bg-red-50 dark:bg-red-900/30 rounded-lg px-3 py-2">
-                  {createError}
-                </p>
-              )}
-            </div>
-            <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex justify-end gap-2">
-              <button
-                onClick={() => setShowCreate(false)}
-                className="px-4 py-2 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg"
-              >
-                取消
-              </button>
-              <button
-                onClick={submitCreate}
-                disabled={creating}
-                className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg disabled:opacity-50"
-              >
-                {creating ? '创建中...' : '创建'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

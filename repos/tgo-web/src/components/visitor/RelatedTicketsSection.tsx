@@ -7,7 +7,7 @@ interface TicketItem {
   id: string;
   number: string;
   title: string;
-  /** 后端工单状态: open/pending_human/processing/resolved/closed/rejected */
+  /** 后端工单状态: pending_reply/replied/archived */
   status?: string;
   url?: string;
   /** 非终态 (可标记解决/拒绝) */
@@ -49,36 +49,24 @@ const RelatedTicketsSection: React.FC<RelatedTicketsSectionProps> = ({
   const { t } = useTranslation();
   const getStatusColor = (status?: TicketItem['status']) => {
     switch (status) {
-      case 'resolved':
+      case 'replied':
         return 'text-teal-600 hover:text-teal-700';
-      case 'rejected':
-        return 'text-red-600 hover:text-red-700';
-      case 'closed':
+      case 'archived':
         return 'text-gray-600 hover:text-gray-700';
-      case 'pending_human':
+      case 'pending_reply':
         return 'text-yellow-600 hover:text-yellow-700';
-      case 'processing':
-        return 'text-blue-600 hover:text-blue-700';
-      case 'open':
-        return 'text-green-600 hover:text-green-700';
       default:
         return 'text-blue-600 hover:text-blue-700';
     }
   };
   const getStatusText = (status?: TicketItem['status']) => {
     switch (status) {
-      case 'open':
-        return t('ticket.status.open', '待处理');
-      case 'pending_human':
-        return t('ticket.status.pendingHuman', '待人工接手');
-      case 'processing':
-        return t('ticket.status.processing', '处理中');
-      case 'resolved':
-        return t('ticket.status.resolved', '已解决');
-      case 'closed':
-        return t('ticket.status.closed', '已关闭');
-      case 'rejected':
-        return t('ticket.status.rejected', '已拒绝');
+      case 'pending_reply':
+        return t('ticket.status.pendingReply', '待回复');
+      case 'replied':
+        return t('ticket.status.replied', '已回复');
+      case 'archived':
+        return t('ticket.status.archived', '已归档');
       default:
         return t('ticket.status.unknown', '未知');
     }

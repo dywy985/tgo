@@ -318,44 +318,6 @@ const VisitorDetailPanel: React.FC<VisitorDetailPanelProps> = ({
     return () => { cancelled = true; };
   }, [visitorId, channelInfo]);
 
-  // 快捷标记已解决
-  const handleResolveTicket = useCallback(async (ticketId: string) => {
-    try {
-      await ticketsApiService.changeStatus(ticketId, 'resolved');
-      const extra = channelInfo?.extra as ChannelVisitorExtra | undefined;
-      const vid = visitorId || extra?.id || null;
-      if (vid) {
-        const resp = await ticketsApiService.listTickets({ visitor_id: vid, limit: 5 });
-        setRelatedTickets(resp.data || []);
-      }
-      showToast('success', '工单已标记解决');
-    } catch (err) {
-      showToast('error', '标记失败', err instanceof Error ? err.message : String(err));
-    }
-  }, [visitorId, channelInfo, showToast]);
-
-  // 快捷拒绝 (必填原因)
-  const handleRejectTicket = useCallback(async (ticketId: string) => {
-    const reason = window.prompt('请输入拒绝原因（必填）：');
-    if (reason === null) return; // 取消
-    if (!reason.trim()) {
-      showToast('error', '拒绝原因不能为空');
-      return;
-    }
-    try {
-      await ticketsApiService.changeStatus(ticketId, 'rejected', reason.trim());
-      const extra = channelInfo?.extra as ChannelVisitorExtra | undefined;
-      const vid = visitorId || extra?.id || null;
-      if (vid) {
-        const resp = await ticketsApiService.listTickets({ visitor_id: vid, limit: 5 });
-        setRelatedTickets(resp.data || []);
-      }
-      showToast('success', '工单已拒绝');
-    } catch (err) {
-      showToast('error', '拒绝失败', err instanceof Error ? err.message : String(err));
-    }
-  }, [visitorId, channelInfo, showToast]);
-
   // 独立模式：从 visitorData 或 API 获取数据
   useEffect(() => {
     if (useChannelMode) return;
@@ -1252,7 +1214,7 @@ const VisitorDetailPanel: React.FC<VisitorDetailPanelProps> = ({
                     title: tk.title,
                     status: tk.status,
                     url: `/tickets/${tk.id}`,
-                    resolvable: !['resolved', 'closed', 'rejected'].includes(tk.status),
+                    resolvable: false,
                   }))}
                   draggable
                   className={sectionClassName}
@@ -1260,8 +1222,6 @@ const VisitorDetailPanel: React.FC<VisitorDetailPanelProps> = ({
                   onToggle={(expanded) => handleToggleSection('related_tickets', expanded)}
                   onDragStart={(e) => handleDragStart(e, 'related_tickets')}
                   onDragEnd={handleDragEnd}
-                  onResolve={handleResolveTicket}
-                  onReject={handleRejectTicket}
                 />
               );
             default:

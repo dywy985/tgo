@@ -23,7 +23,8 @@ import { useToast } from '@/hooks/useToast';
 import { showApiError } from '@/utils/toastHelpers';
 import { PlatformType } from '@/types';
 import type { ChannelVisitorExtra, ChannelInfo } from '@/types';
-import { attachUnansweredState, sortChatsByAttention } from '@/utils/chatSort';
+import { attachReplyMonitorState, attachUnansweredState, sortChatsByAttention } from '@/utils/chatSort';
+import { replyMonitorApi, type PendingReply } from '@/services/replyMonitorApi';
 
 // ============================================================================
 // Main Component
@@ -149,6 +150,14 @@ const ChatListComponent: React.FC<ChatListProps> = ({
   const [allChats, setAllChats] = useState<Chat[]>([]);
   const [manualChats, setManualChats] = useState<Chat[]>([]);
   const [recentVisitors, setRecentVisitors] = useState<VisitorResponse[]>([]);
+  const [pendingReplies, setPendingReplies] = useState<PendingReply[]>([]);
+  useEffect(() => {
+    let active = true;
+    const refresh = () => replyMonitorApi.getPending().then(rows => { if (active) setPendingReplies(rows); }).catch(() => undefined);
+    void refresh();
+    const timer = window.setInterval(refresh, 30000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, []);
   
   // Loading state for each tab
   const [isLoadingMine, setIsLoadingMine] = useState(false);
@@ -831,19 +840,21 @@ const ChatListComponent: React.FC<ChatListProps> = ({
 
   // Get the appropriate chat list based on active tab
   const getChatsForTab = useCallback((): Chat[] => {
+    let chats: Chat[];
     switch (activeTab) {
       case 'mine':
-        return mergedMyChats;
+        chats = mergedMyChats; break;
       case 'unassigned':
-        return unassignedChats;
+        chats = unassignedChats; break;
       case 'all':
-        return mergedAllChats;
+        chats = mergedAllChats; break;
       case 'manual':
-        return manualChats;
+        chats = manualChats; break;
       default:
-        return mergedMyChats;
+        chats = mergedMyChats;
     }
-  }, [activeTab, mergedMyChats, unassignedChats, mergedAllChats, manualChats]);
+    return sortChatsByAttention(attachReplyMonitorState(chats, pendingReplies));
+  }, [activeTab, mergedMyChats, unassignedChats, mergedAllChats, manualChats, pendingReplies]);
 
   // Calculate counts for tabs
   // "我的" tab 显示会话数量，"未分配" tab 显示等待数量

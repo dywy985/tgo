@@ -160,9 +160,12 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message, onSuggestionClick, o
   });
   
   // Display info with staff fallback
+  const sourceSenderName = typeof meta.source_sender_name === 'string' ? meta.source_sender_name.trim() : '';
+  const sourceSenderKind = typeof meta.source_sender_kind === 'string' ? meta.source_sender_kind.trim() : '';
+  const sourceSenderRole = sourceSenderKind === 'staff' ? '客服' : sourceSenderKind === 'customer' ? '客户' : sourceSenderKind === 'unknown' ? '未识别成员' : '';
   const displayName = isOwnMessage
     ? (message.fromInfo?.name || t('chat.header.staffFallback', '客服'))
-    : channelName;
+    : (sourceSenderName ? `${sourceSenderName}${sourceSenderRole ? ` · ${sourceSenderRole}` : ''}` : channelName);
   const displayAvatar = channelAvatar;
 
   // System message - payload.type 在 1000-2000 范围内

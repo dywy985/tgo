@@ -4,6 +4,7 @@
  */
 
 import i18n from '../i18n';
+import { createRefreshCoordinator } from './authRefresh.js';
 
 // API Configuration
 // Priority: window.ENV (runtime) > import.meta.env (build-time) > default
@@ -63,6 +64,7 @@ export interface StaffResponse {
   id: string;
   project_id: string;
   username: string;
+  name?: string | null;
   nickname: string | null;
   avatar_url: string | null;
   role: 'user' | 'admin' | 'agent';
@@ -97,17 +99,50 @@ export interface APIErrorDetail {
 
 // Unauthorized handler hook
 let onUnauthorized: (() => void) | null = null;
-export const setUnauthorizedHandler = (handler: () => void) => { onUnauthorized = handler; };
+let onTokenRefreshed: ((token: string) => void) | null = null;
+export const setUnauthorizedHandler = (handler: (() => void) | null) => { onUnauthorized = handler; };
+export const setTokenRefreshedHandler = (handler: ((token: string) => void) | null) => {
+  onTokenRefreshed = handler;
+};
 
 // HTTP Client Class
 class APIClient {
   private baseURL: string;
   private token: string | null = null;
+  private refreshAccessToken: () => Promise<string>;
 
   constructor(baseURL: string) {
     this.baseURL = baseURL;
     // Load token from localStorage on initialization
     this.token = localStorage.getItem('tgo-auth-token');
+    this.refreshAccessToken = createRefreshCoordinator({
+      refreshAccessToken: async () => {
+        const response = await fetch(`${this.baseURL}/v1/staff/refresh`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-User-Language': getCurrentLanguage(),
+          },
+        });
+        if (!response.ok) {
+          throw new Error(`Session refresh failed with HTTP ${response.status}`);
+        }
+        const payload = await response.json() as StaffLoginResponse;
+        if (!payload.access_token) {
+          throw new Error('Session refresh response did not include an access token');
+        }
+        return payload.access_token;
+      },
+      onTokenRefreshed: (token: string) => {
+        this.setToken(token);
+        onTokenRefreshed?.(token);
+      },
+      onRefreshFailed: () => {
+        this.setToken(null);
+        try { onUnauthorized?.(); } catch {}
+      },
+    });
   }
 
   // Set authentication token
@@ -125,24 +160,55 @@ class APIClient {
     return this.token;
   }
 
+  private async fetchWithAuthRetry(
+    endpoint: string,
+    options: RequestInit,
+  ): Promise<Response> {
+    const url = `${this.baseURL}${endpoint}`;
+    const canRefresh = ![
+      '/v1/staff/login',
+      '/v1/staff/refresh',
+      '/v1/staff/logout',
+    ].includes(endpoint);
+
+    const execute = (): Promise<Response> => {
+      const headers = new Headers(options.headers);
+      if (this.token) {
+        headers.set('Authorization', `Bearer ${this.token}`);
+      } else {
+        headers.delete('Authorization');
+      }
+      headers.set('X-User-Language', getCurrentLanguage());
+      return fetch(url, {
+        ...options,
+        headers,
+        credentials: 'include',
+      });
+    };
+
+    const hadAccessToken = Boolean(this.token);
+    let response = await execute();
+    if (response.status === 401 && hadAccessToken && canRefresh) {
+      try {
+        await this.refreshAccessToken();
+        response = await execute();
+      } catch {
+        // The refresh coordinator clears the token and invokes the single
+        // global logout handler. Preserve the original 401 for APIError.
+      }
+    }
+    return response;
+  }
+
   // Generic request method
   private async request<T>(
     endpoint: string,
     options: RequestInit = {}
   ): Promise<T> {
-    const url = `${this.baseURL}${endpoint}`;
     const headers: HeadersInit = {
       'Content-Type': 'application/json',
       ...options.headers,
     };
-
-    // Add authorization header if token exists
-    if (this.token) {
-      (headers as Record<string, string>)['Authorization'] = `Bearer ${this.token}`;
-    }
-
-    // Add user language header
-    (headers as Record<string, string>)['X-User-Language'] = getCurrentLanguage();
 
     const config: RequestInit = {
       ...options,
@@ -150,14 +216,10 @@ class APIClient {
     };
 
     try {
-      const response = await fetch(url, config);
+      const response = await this.fetchWithAuthRetry(endpoint, config);
       
       // Handle different response types
       if (!response.ok) {
-        // Trigger global unauthorized handler on 401 when token exists
-        if (response.status === 401 && this.token) {
-          try { onUnauthorized?.(); } catch {}
-        }
         let errorData: APIErrorDetail;
         try {
           const responseData = await response.json();
@@ -253,18 +315,12 @@ class APIClient {
       signal?: AbortSignal;
     }
   ): Promise<void> {
-    const url = `${this.baseURL}${endpoint}`;
     const headers: HeadersInit = {
       'Content-Type': 'application/json',
     };
 
-    if (this.token) {
-      (headers as Record<string, string>)['Authorization'] = `Bearer ${this.token}`;
-    }
-    (headers as Record<string, string>)['X-User-Language'] = getCurrentLanguage();
-
     try {
-      const response = await fetch(url, {
+      const response = await this.fetchWithAuthRetry(endpoint, {
         method: 'POST',
         headers,
         body: data ? JSON.stringify(data) : undefined,
@@ -348,27 +404,17 @@ class APIClient {
 
   // POST multipart/form-data (FormData)
   async postFormData<T>(endpoint: string, formData: FormData, extraHeaders?: HeadersInit): Promise<T> {
-    const url = `${this.baseURL}${endpoint}`;
     const headers: HeadersInit = {
       ...(extraHeaders || {}),
     };
-    if (this.token) {
-      (headers as Record<string, string>)['Authorization'] = `Bearer ${this.token}`;
-    }
-    // Add user language header
-    (headers as Record<string, string>)['X-User-Language'] = getCurrentLanguage();
     const config: RequestInit = {
       method: 'POST',
       headers,
       body: formData,
     };
     try {
-      const response = await fetch(url, config);
+      const response = await this.fetchWithAuthRetry(endpoint, config);
       if (!response.ok) {
-        // Trigger global unauthorized handler on 401 when token exists
-        if (response.status === 401 && this.token) {
-          try { onUnauthorized?.(); } catch {}
-        }
         let errorData: APIErrorDetail;
         try {
           const responseData = await response.json();
@@ -410,20 +456,10 @@ class APIClient {
 
   // GET raw response (e.g., for binary downloads)
   async getResponse(endpoint: string, extraHeaders?: HeadersInit): Promise<Response> {
-    const url = `${this.baseURL}${endpoint}`;
     const headers: HeadersInit = { ...(extraHeaders || {}) };
-    if (this.token) {
-      (headers as Record<string, string>)['Authorization'] = `Bearer ${this.token}`;
-    }
-    // Add user language header
-    (headers as Record<string, string>)['X-User-Language'] = getCurrentLanguage();
     const config: RequestInit = { method: 'GET', headers };
-    const response = await fetch(url, config);
+    const response = await this.fetchWithAuthRetry(endpoint, config);
     if (!response.ok) {
-      // Trigger global unauthorized handler on 401 when token exists
-      if (response.status === 401 && this.token) {
-        try { onUnauthorized?.(); } catch {}
-      }
       // Let caller handle specific status, but throw a structured error for consistency
       let message = `HTTP ${response.status}: ${response.statusText}`;
       try {
@@ -526,9 +562,13 @@ export const authAPI = {
     return apiClient.post<StaffResponse>('/v1/staff', registerData);
   },
 
-  // Logout (clear token)
-  logout(): void {
-    apiClient.setToken(null);
+  // Logout (clear both the server cookie and local access token)
+  async logout(): Promise<void> {
+    try {
+      await apiClient.post<void>('/v1/staff/logout');
+    } finally {
+      apiClient.setToken(null);
+    }
   },
 
   // Get current user info

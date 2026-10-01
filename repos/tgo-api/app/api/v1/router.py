@@ -14,6 +14,7 @@ from app.api.v1.endpoints import (
     email,
     onboarding,
     platforms,
+    platform_connections,
     public_tickets,
     plugins,
     plugin_tools,
@@ -43,6 +44,8 @@ from app.api.v1.endpoints import (
     utils,
     debug_wecom,
     stats,
+    reply_monitor,
+    wecom_identities,
 )
 
 api_router = APIRouter()
@@ -72,6 +75,12 @@ api_router.include_router(
     staff.router,
     prefix="/staff",
     tags=["Staff"]
+)
+
+api_router.include_router(
+    wecom_identities.router,
+    prefix="/staff/wecom-userids",
+    tags=["WeCom Identities"],
 )
 
 api_router.include_router(
@@ -116,6 +125,11 @@ api_router.include_router(
     prefix="/platforms",
     tags=["Platforms"]
 )
+api_router.include_router(
+    platform_connections.router,
+    prefix="/platforms",
+    tags=["Platform Connections"],
+)
 
 # 企微通道调试 (设置页"企微调试"面板)
 api_router.include_router(
@@ -129,6 +143,12 @@ api_router.include_router(
     stats.router,
     prefix="/stats",
     tags=["Stats"]
+)
+
+api_router.include_router(
+    reply_monitor.router,
+    prefix="/reply-monitor",
+    tags=["Reply Monitor"],
 )
 
 api_router.include_router(

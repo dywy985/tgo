@@ -140,7 +140,7 @@ async def upload_file(
     Upload a new file for RAG processing within the specified project.
 
     The file will be stored and queued for document extraction and embedding generation.
-    Supported formats: PDF, Word documents, text files, and markdown files.
+    Supported formats: PDF, Word documents, Excel workbooks, text files, markdown, and HTML files.
     All files are scoped to the specified project.
     """
     # Validate file

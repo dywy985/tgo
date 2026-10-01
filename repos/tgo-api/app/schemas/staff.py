@@ -120,6 +120,11 @@ class StaffUpdate(BaseSchema):
         None,
         description="Whether staff has temporarily paused accepting new visitors (short-term switch)"
     )
+    wecom_userid: Optional[str] = Field(
+        None,
+        max_length=128,
+        description="企微成员 userid（应用消息推送目标）"
+    )
     password: Optional[str] = Field(
         None,
         min_length=8,

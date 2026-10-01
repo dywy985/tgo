@@ -192,6 +192,12 @@ WORKDIR /app
 # Copy virtualenv from builder (cached - only changes when deps change)
 COPY --from=builder --chown=rag:rag /app/.venv /app/.venv
 
+# Kept in a small, independently cached layer because the legacy Poetry lock
+# is expensive to regenerate and spreadsheet support has no native runtime.
+COPY requirements-excel.txt /tmp/requirements-excel.txt
+RUN /app/.venv/bin/pip install --no-cache-dir -r /tmp/requirements-excel.txt && \
+    rm /tmp/requirements-excel.txt
+
 # Copy NLTK data from builder (cached)
 COPY --from=builder --chown=rag:rag /app/nltk_data /app/nltk_data
 

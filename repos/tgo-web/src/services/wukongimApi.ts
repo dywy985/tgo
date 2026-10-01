@@ -634,6 +634,9 @@ export class WuKongIMUtils {
         ...imageMeta,
         ...fileMeta,
         ...(richImagesMeta ? { images: richImagesMeta } : {}),
+        ...(payloadObj?.monitor_message_id ? { monitor_message_id: payloadObj.monitor_message_id } : {}),
+        ...(payloadObj?.source_sender_name ? { source_sender_name: payloadObj.source_sender_name } : {}),
+        ...(payloadObj?.source_sender_kind ? { source_sender_kind: payloadObj.source_sender_kind } : {}),
       }
     };
 

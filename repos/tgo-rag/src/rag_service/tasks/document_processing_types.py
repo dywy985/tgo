@@ -174,6 +174,8 @@ SUPPORTED_CONTENT_TYPES = [
     "text/markdown",
     "application/msword",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel",
     "text/html",
     "application/xhtml+xml"
 ]
@@ -185,6 +187,8 @@ PARSER_MAPPING = {
     "text/markdown": "TextParser",
     "application/msword": "MsWordParser",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "MsWordParser",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "SpreadsheetDocumentLoader",
+    "application/vnd.ms-excel": "SpreadsheetDocumentLoader",
     "text/html": "BS4HTMLParser",
     "application/xhtml+xml": "BS4HTMLParser"
 }

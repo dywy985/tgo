@@ -33,7 +33,6 @@ from app.models.ticket import (
     TicketStatus,
     TicketPriority,
     TicketSource,
-    TicketResolveType,
     TICKET_STATUS_TRANSITIONS,
 )
 from app.models.visitor_waiting_queue import (
@@ -46,6 +45,26 @@ from app.models.visitor_waiting_queue import (
 from app.models.channel_memory_clearance import ChannelMemoryClearance, ClearanceUserType
 from app.models.store_credential import StoreCredential
 from app.models.agent_usage_record import AgentUsageRecord
+from app.models.reply_monitor import (
+    PlatformConnectionAudit,
+    PlatformConnectionGap,
+    PlatformDataResetJob,
+    ReplyMonitorMediaRecoveryCandidate,
+    ReplyMonitorMediaRecoveryJob,
+    ReplyMonitorBatch,
+    ReplyMonitorEvent,
+    ReplyMonitorGroupCustomer,
+    ReplyMonitorGroupPolicy,
+    ReplyMonitorRebuildJob,
+    ReplyMonitorMedia,
+    ReplyMonitorReminder,
+    ReplyMonitorDigest,
+    ReplyMonitorSettings,
+    WeComConversationBinding,
+    WeComDiscoveredIdentity,
+    WeComIdentitySettings,
+    WeComJumpGrant,
+)
 
 __all__ = [
     # Models
@@ -89,6 +108,24 @@ __all__ = [
     "ChannelMemoryClearance",
     "StoreCredential",
     "AgentUsageRecord",
+    "ReplyMonitorSettings",
+    "ReplyMonitorEvent",
+    "ReplyMonitorGroupCustomer",
+    "ReplyMonitorGroupPolicy",
+    "ReplyMonitorRebuildJob",
+    "ReplyMonitorBatch",
+    "ReplyMonitorReminder",
+    "ReplyMonitorDigest",
+    "ReplyMonitorMedia",
+    "PlatformConnectionAudit",
+    "PlatformConnectionGap",
+    "PlatformDataResetJob",
+    "ReplyMonitorMediaRecoveryJob",
+    "ReplyMonitorMediaRecoveryCandidate",
+    "WeComConversationBinding",
+    "WeComDiscoveredIdentity",
+    "WeComIdentitySettings",
+    "WeComJumpGrant",
     # Enums
     "PlatformType",
     "StaffRole",
@@ -104,6 +141,5 @@ __all__ = [
     "TicketStatus",
     "TicketPriority",
     "TicketSource",
-    "TicketResolveType",
     "TICKET_STATUS_TRANSITIONS",
 ]

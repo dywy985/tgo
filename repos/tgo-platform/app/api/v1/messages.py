@@ -22,9 +22,12 @@ async def ingest(req: Request, db: AsyncSession = Depends(get_db)) -> dict:
 
 
 from typing import Optional
+import asyncio
 import base64
 import hashlib
 import logging
+import os
+import time
 import httpx
 import uuid
 
@@ -38,6 +41,38 @@ from app.db.models import Platform
 from app.api.wecom_utils import wecom_get_access_token, wecom_kf_send_msg, wecom_upload_temp_media, resolve_visitor_platform_open_id, resolve_wecom_open_kfid
 from app.api.slack_utils import slack_send_text, slack_send_file, slack_get_dm_channel
 from app.core.config import settings
+
+
+def _resolve_worktool_destination(platform_open_id: str, cfg: dict) -> tuple[str, str]:
+    """Resolve the exact originating phone and conversation from a WorkTool visitor."""
+    raw = str(platform_open_id or "").strip()
+    devices = {
+        str(device.get("robot_id") or "").strip()
+        for device in (cfg.get("devices") or [])
+        if isinstance(device, dict) and device.get("enabled", True)
+    }
+    devices.discard("")
+    legacy_robot_id = str(cfg.get("robot_id") or "").strip()
+
+    if raw.startswith("wt:"):
+        parts = raw.split(":", 2)
+        if len(parts) == 3:
+            source_robot_id, title = parts[1].strip(), parts[2].strip()
+            if source_robot_id and title and (not devices or source_robot_id in devices):
+                return source_robot_id, title
+
+    title = raw.rsplit(":", 1)[-1].strip() if raw else ""
+    if legacy_robot_id and title:
+        return legacy_robot_id, title
+    if len(devices) == 1 and title:
+        return next(iter(devices)), title
+    return "", title
+
+
+def _worktool_image_caption(payload: dict) -> str:
+    """WuKongIM's image placeholder is UI text, not a caption to send."""
+    content = str(payload.get("content") or "").strip()
+    return "" if content == "[图片]" else content
 
 
 def _internalize_url(url: str) -> str:
@@ -57,6 +92,25 @@ def _internalize_url(url: str) -> str:
         transformed = re.sub(r'^https?://(localhost|127\.0\.0\.1)', internal_base, transformed)
         
     return transformed
+
+
+async def _wait_worktool_result(
+    gateway_url: str, send_id: str, headers: dict[str, str], *, timeout_seconds: float = 26.0
+) -> dict:
+    """Wait for the phone's execution result, never treating queued as delivered."""
+    deadline = time.monotonic() + timeout_seconds
+    async with httpx.AsyncClient(timeout=5) as client:
+        while True:
+            response = await client.get(
+                f"{gateway_url}/api/sends/{send_id}", headers=headers
+            )
+            response.raise_for_status()
+            result = response.json()
+            if result.get("status") in {"success", "failed", "timeout"}:
+                return result
+            if time.monotonic() >= deadline:
+                return {"status": "unconfirmed", "send_id": send_id}
+            await asyncio.sleep(0.5)
 
 
 class SendMessageRequest(BaseModel):
@@ -461,39 +515,111 @@ async def send_message(req_body: SendMessageRequest, request: Request, db: Async
         if platform_type == "worktool":
             # WorkTool 桥接 (自建网关): 调网关 /api/send, 目标群 = visitor 的 from_uid 末段 (群名)
             gateway_url = (cfg.get("gateway_url") or "").rstrip("/")
-            robot_id = str(cfg.get("robot_id") or "")
-            if not (gateway_url and robot_id):
+            gateway_api_key = str(
+                cfg.get("api_key")
+                or os.environ.get("WORKTOOL_CONTROL_TOKEN")
+                or os.environ.get("WECOM_DEBUG_WORKTOOL_API_KEY")
+                or ""
+            )
+            if not gateway_url:
                 return error_response(
                     status.HTTP_400_BAD_REQUEST,
                     code="PLATFORM_CONFIG_INVALID",
-                    message="worktool requires gateway_url and robot_id in platform config",
+                    message="worktool requires gateway_url in platform config",
                     request_id=request_id,
                 )
-            if msg_type != 1:
+            if msg_type not in {1, 2}:
                 return error_response(
                     status.HTTP_400_BAD_REQUEST,
                     code="UNSUPPORTED_MESSAGE_TYPE",
-                    message="worktool supports only text (type=1)",
+                    message="worktool supports text (type=1) and image (type=2)",
                     request_id=request_id,
                 )
-            content_text = str(payload.get("content") or "")
             try:
                 target_uid = await resolve_visitor_platform_open_id(visitor_id)
             except Exception:
                 target_uid = ""
-            title = target_uid.rsplit(":", 1)[-1] if target_uid else ""
-            if not title:
+            robot_id, title = _resolve_worktool_destination(target_uid, cfg)
+            if not (robot_id and title):
                 return error_response(
                     status.HTTP_400_BAD_REQUEST,
                     code="PLATFORM_CONFIG_INVALID",
-                    message=f"cannot resolve group name from visitor {visitor_id}",
+                    message=f"cannot resolve WorkTool device and conversation from visitor {visitor_id}",
                     request_id=request_id,
                 )
+            gateway_headers = {"X-API-Key": gateway_api_key} if gateway_api_key else {}
+            if msg_type == 2:
+                image_url = str(payload.get("url") or "").strip()
+                if not image_url:
+                    return error_response(
+                        status.HTTP_400_BAD_REQUEST, code="INVALID_PAYLOAD",
+                        message="Image url is required", request_id=request_id,
+                    )
+                download_url = _internalize_url(image_url)
+                async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+                    image_response = await client.get(download_url)
+                    image_response.raise_for_status()
+                    image_content = image_response.content
+                if not image_content or len(image_content) > 8 * 1024 * 1024:
+                    return error_response(
+                        status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, code="IMAGE_TOO_LARGE",
+                        message="WorkTool image must be between 1 byte and 8MB", request_id=request_id,
+                    )
+                content_type = str(image_response.headers.get("content-type") or "").split(";", 1)[0].lower()
+                if content_type not in {"image/jpeg", "image/png", "image/webp", "image/gif"}:
+                    return error_response(
+                        status.HTTP_400_BAD_REQUEST, code="INVALID_IMAGE_TYPE",
+                        message="Unsupported WorkTool image type", request_id=request_id,
+                    )
+                filename = image_url.split("?", 1)[0].rsplit("/", 1)[-1] or "reply-image"
+                gateway_payload = {
+                    "robot_id": robot_id,
+                    "title": title,
+                    "filename": filename,
+                    "content_type": content_type,
+                    "content_base64": base64.b64encode(image_content).decode("ascii"),
+                    "caption": _worktool_image_caption(payload),
+                    "idempotency_key": client_msg_no or None,
+                }
+                async with httpx.AsyncClient(timeout=30) as client:
+                    resp = await client.post(
+                        f"{gateway_url}/api/send/media", json=gateway_payload,
+                        headers=gateway_headers,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                if data.get("status") not in {"queued", "received", "success"}:
+                    return error_response(
+                        status.HTTP_502_BAD_GATEWAY, code="WORKTOOL_SEND_FAILED",
+                        message=f"WorkTool 网关返回异常: {data}", request_id=request_id,
+                    )
+                result = await _wait_worktool_result(
+                    gateway_url, str(data.get("send_id") or ""), gateway_headers
+                )
+                if result.get("status") != "success":
+                    return error_response(
+                        status.HTTP_502_BAD_GATEWAY, code="WORKTOOL_SEND_UNCONFIRMED",
+                        message="手机未确认图片发送成功，请先核对企微群，避免重复发送",
+                        request_id=request_id,
+                    )
+                logging.info("[SEND] client_msg_no=%s worktool image confirmed", client_msg_no)
+                return {"ok": True, "client_msg_no": client_msg_no, "send_id": data.get("send_id"), "message": "Phone send confirmed"}
+
+            content_text = str(payload.get("content") or "")
+            gateway_payload = {
+                "robot_id": robot_id,
+                "title": title,
+                "content": content_text[:20480],
+            }
+            if client_msg_no:
+                gateway_payload["idempotency_key"] = client_msg_no
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.post(
                     f"{gateway_url}/api/send",
-                    json={"robot_id": robot_id, "title": title, "content": content_text[:20480]},
+                    json=gateway_payload,
+                    headers=gateway_headers,
                 )
+                resp.raise_for_status()
                 data = resp.json()
             if data.get("status") != "queued":
                 return error_response(
@@ -502,8 +628,17 @@ async def send_message(req_body: SendMessageRequest, request: Request, db: Async
                     message=f"WorkTool 网关返回异常: {data}",
                     request_id=request_id,
                 )
-            logging.info("[SEND] client_msg_no=%s worktool text sent to group %s", client_msg_no, title)
-            return {"ok": True, "client_msg_no": client_msg_no, "message": "Message sent successfully"}
+            result = await _wait_worktool_result(
+                gateway_url, str(data.get("send_id") or ""), gateway_headers
+            )
+            if result.get("status") != "success":
+                return error_response(
+                    status.HTTP_502_BAD_GATEWAY, code="WORKTOOL_SEND_UNCONFIRMED",
+                    message="手机未确认文字发送成功，请先核对企微群，避免重复发送",
+                    request_id=request_id,
+                )
+            logging.info("[SEND] client_msg_no=%s worktool text confirmed", client_msg_no)
+            return {"ok": True, "client_msg_no": client_msg_no, "send_id": data.get("send_id"), "message": "Phone send confirmed"}
 
         return error_response(status.HTTP_400_BAD_REQUEST, code="PLATFORM_TYPE_UNSUPPORTED", message=f"Unsupported platform type: {platform.type}", request_id=request_id)
 

@@ -5,7 +5,7 @@ import { router } from './router';
 import ToastContainer, { ToastContext } from './components/ui/ToastContainer';
 import { WebSocketManager } from './components/WebSocketManager';
 import { useStoreInitialization } from './hooks/useStoreInitialization';
-import { setUnauthorizedHandler } from '@/services/api';
+import { setTokenRefreshedHandler, setUnauthorizedHandler } from '@/services/api';
 import { useAuthStore } from '@/stores/authStore';
 import { useAppSettingsStore } from '@/stores/appSettingsStore';
 
@@ -60,6 +60,9 @@ const App: React.FC = () => {
 
   useEffect(() => {
     let isLoggingOut = false;
+    setTokenRefreshedHandler((token) => {
+      useAuthStore.getState().setAccessToken(token);
+    });
     setUnauthorizedHandler(() => {
       const { isAuthenticated, logout } = useAuthStore.getState();
       if (isLoggingOut) return;
@@ -73,6 +76,10 @@ const App: React.FC = () => {
         logout();
       }
     });
+    return () => {
+      setTokenRefreshedHandler(null);
+      setUnauthorizedHandler(null);
+    };
   }, [toast, t]);
 
   return (

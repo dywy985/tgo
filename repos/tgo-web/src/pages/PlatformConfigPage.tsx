@@ -7,6 +7,7 @@ import WebsitePlatformConfig from '@/components/platforms/WebsitePlatformConfig'
 import WeComPlatformConfig from '@/components/platforms/WeComPlatformConfig';
 import WeComBotPlatformConfig from '@/components/platforms/WeComBotPlatformConfig';
 import WeComBotLongConnConfig from '@/components/platforms/WeComBotLongConnConfig';
+import WorkToolPlatformConfig from '@/components/platforms/WorkToolPlatformConfig';
 import FeishuBotPlatformConfig from '@/components/platforms/FeishuBotPlatformConfig';
 import DingTalkBotPlatformConfig from '@/components/platforms/DingTalkBotPlatformConfig';
 import EmailPlatformConfig from '@/components/platforms/EmailPlatformConfig';
@@ -110,9 +111,12 @@ const PlatformConfigPage: React.FC = () => {
   if ((platform.type as any) === 'wecom_bot') {
     return (
       <div className="flex flex-col gap-6 w-full">
-        <WeComBotLongConnConfig />
+        <WeComBotLongConnConfig platformId={platform.id} />
       </div>
     );
+  }
+  if ((platform.type as any) === 'worktool') {
+    return <WorkToolPlatformConfig platformId={platform.id} platformName={platform.display_name || platform.name} />;
   }
   // 企业微信机器人 API 模式（Webhook 回调）
   if ((platform.type as any) === 'wecom_bot_api') {
@@ -152,4 +156,3 @@ const PlatformConfigPage: React.FC = () => {
 };
 
 export default PlatformConfigPage;
-

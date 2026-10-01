@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { attachUnansweredState, sortChatsByAttention } from '../src/utils/chatSort.js';
+import { attachReplyMonitorState, attachUnansweredState, sortChatsByAttention } from '../src/utils/chatSort.js';
 
 
 test('unanswered group and direct chats are pinned before answered chats', () => {
@@ -29,6 +29,14 @@ test('sorting does not mutate the source list', () => {
   assert.deepEqual(source.map((chat) => chat.id), ['older', 'newer']);
 });
 
+test('pending chats are ordered by longest wait first', () => {
+  const result = sortChatsByAttention([
+    { id: 'newer-pending', isUnanswered: true, pendingReplySince: '2026-09-02T02:00:00Z' },
+    { id: 'older-pending', isUnanswered: true, pendingReplySince: '2026-09-02T01:00:00Z' },
+  ]);
+  assert.deepEqual(result.map((chat) => chat.id), ['older-pending', 'newer-pending']);
+});
+
 test('visitor response flag is attached to its group or direct conversation', () => {
   const chats = [{ id: 'chat', channelId: 'visitor-1', channelType: 251 }];
   const channels = [{
@@ -41,4 +49,11 @@ test('visitor response flag is attached to its group or direct conversation', ()
 
   assert.equal(result[0].isUnanswered, true);
   assert.equal(chats[0].isUnanswered, undefined);
+});
+
+test('reply monitor pending state matches platform open id', () => {
+  const chats = [{id:'c', channelInfo:{extra:{platform_open_id:'wt:r:g'}}}];
+  const result = attachReplyMonitorState(chats, [{channel_open_id:'wt:r:g', pending_reply_since:'2026-09-02T01:00:00Z', reminder_count:1}]);
+  assert.equal(result[0].isUnanswered, true);
+  assert.equal(result[0].replyMonitorReminderCount, 1);
 });

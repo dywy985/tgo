@@ -73,6 +73,8 @@ RUN sed -i 's#deb.debian.org/debian#mirrors.huaweicloud.com/debian#g' /etc/apt/s
     && apt-get install -y --no-install-recommends \
         libpq-dev \
         curl \
+        tesseract-ocr \
+        tesseract-ocr-chi-sim \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy virtualenv from builder (keep same path to preserve shebang)

@@ -220,6 +220,7 @@ dump.rdb
 # Test files (temporary)
 test_*.py
 *_test.py
+!tests/test_spreadsheet_loader.py
 
 # Coverage reports
 .coverage

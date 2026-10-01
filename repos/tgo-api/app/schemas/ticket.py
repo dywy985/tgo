@@ -14,13 +14,13 @@ from app.schemas.base import BaseSchema, PaginatedResponse
 # ---------------------------------------------------------------------------
 
 class TicketCreate(BaseSchema):
-    """创建工单（手动建单 / 内部联动）. source 默认 ai_auto，坐席建单传 staff_manual."""
+    """人工回复监控内部建单载荷。"""
 
     title: str = Field(..., max_length=120, description="问题标题")
     description: str = Field(..., description="问题原文")
     category: str = Field("other", max_length=50, description="客服分类")
     priority: str = Field("normal", description="low/normal/high/urgent")
-    source: str = Field("staff_manual", description="ai_auto/manual_service/staff_manual")
+    source: str = Field("reply_monitor", description="reply_monitor")
     visitor_id: Optional[UUID] = None
     session_id: Optional[UUID] = None
     platform_id: Optional[UUID] = None
@@ -43,8 +43,8 @@ class TicketCreate(BaseSchema):
     @field_validator("source")
     @classmethod
     def _validate_source(cls, v: str) -> str:
-        if v not in ("ai_auto", "manual_service", "staff_manual"):
-            raise ValueError("source must be one of: ai_auto, manual_service, staff_manual")
+        if v != "reply_monitor":
+            raise ValueError("source must be reply_monitor")
         return v
 
 
@@ -79,10 +79,16 @@ class TicketStatusChange(BaseSchema):
     @field_validator("status")
     @classmethod
     def _validate_status(cls, v: str) -> str:
-        allowed = {"open", "pending_human", "processing", "resolved", "closed", "rejected"}
+        allowed = {"pending_reply", "replied", "archived"}
         if v not in allowed:
             raise ValueError(f"status must be one of: {sorted(allowed)}")
         return v
+
+
+class TicketBulkArchive(BaseSchema):
+    """批量归档已回复工单。"""
+
+    ticket_ids: List[UUID] = Field(..., min_length=1, max_length=100)
 
 
 class TicketAssign(BaseSchema):
@@ -134,15 +140,14 @@ class TicketResponse(BaseSchema):
     status: str
     priority: str
     source: str
-    resolve_type: Optional[str] = None
     ai_summary: Optional[Dict[str, Any]] = None
     custom_fields: Optional[Dict[str, Any]] = None
     contact_name: Optional[str] = None
     contact_phone: Optional[str] = None
     attachments: List[TicketAttachmentResponse] = Field(default_factory=list)
     first_response_at: Optional[datetime] = None
-    resolved_at: Optional[datetime] = None
-    closed_at: Optional[datetime] = None
+    replied_at: Optional[datetime] = None
+    archived_at: Optional[datetime] = None
     sla_due_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
@@ -303,8 +308,6 @@ class TicketStatisticsResponse(BaseSchema):
     by_status: Dict[str, int]
     by_priority: Dict[str, int]
     by_category: Dict[str, int]
-    unresolved_total: int
-    pending_human_total: int
-    ai_resolved_total: int
-    human_resolved_total: int
-    handoff_rate: float  # 转人工率 0-1
+    pending_reply_total: int
+    replied_total: int
+    archived_total: int

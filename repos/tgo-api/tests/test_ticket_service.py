@@ -1,5 +1,6 @@
 """ticket_service（generate_ticket_number / create_ticket）单元测试（stub DB）."""
 import sys
+import pytest
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
@@ -122,6 +123,26 @@ def test_prefix_with_dash():
     assert n == "TK-2026-08-28-100"
 
 
+def test_postgres_number_generation_takes_a_project_scoped_advisory_lock():
+    class PgDB(StubDB):
+        def __init__(self):
+            super().__init__()
+            self.executed = []
+
+        def get_bind(self):
+            return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+        def execute(self, statement, params):
+            self.executed.append((str(statement), params))
+
+    db = PgDB()
+
+    generate_ticket_number(db, "project-1")
+
+    assert "pg_advisory_xact_lock" in db.executed[0][0]
+    assert db.executed[0][1] == {"project_key": "project-1"}
+
+
 # ---------------------------------------------------------------------------
 # create_ticket 全链路（含 SLA 分级 / 自动填写合并）
 # ---------------------------------------------------------------------------
@@ -135,8 +156,8 @@ def test_create_ticket_with_autofill_and_sla():
         title="测试单",
         description="描述",
         priority="high",
-        source="manual_service",
-        status="pending_human",
+        source="reply_monitor",
+        status="pending_reply",
         visitor_id="v1",
         ai_fields={"category": "K6客服"},
     )
@@ -151,18 +172,16 @@ def test_create_ticket_with_autofill_and_sla():
     assert t.ai_summary["autofill"]["category"]["source"] == "ai_fields"
 
 
-def test_create_ticket_ai_description_wins():
+def test_create_ticket_rejects_non_monitor_source():
+    from fastapi import HTTPException
+
     db = FullDB()
-    t = create_ticket(
-        db,
-        project_id="proj1",
-        title="负面情绪：张三",
-        description="AI 检测到负面情绪",
-        category="其他",
-        priority="high",
-        source="ai_auto",
-        visitor_id="v1",
-        ai_fields={"description": "AI 检测到访客负面情绪（satisfaction=1）", "priority": "high"},
-    )
-    assert t.description == "AI 检测到访客负面情绪（satisfaction=1）"
-    assert t.priority == "high"
+    with pytest.raises(HTTPException) as exc:
+        create_ticket(
+            db,
+            project_id="proj1",
+            title="负面情绪：张三",
+            description="AI 检测到负面情绪",
+            source="ai_auto",
+        )
+    assert exc.value.status_code == 409

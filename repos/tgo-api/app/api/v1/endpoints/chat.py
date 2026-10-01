@@ -287,6 +287,19 @@ async def chat_completion(req: ChatCompletionRequest, db: Session = Depends(get_
     # 1) Validate Platform API key and get project
     platform, project = chat_service.validate_platform_and_project(req.api_key, db)
 
+    # Operational hard stop: do this before visitor routing, RAG, transfer or AI calls.
+    if settings.AI_REPLY_FROZEN:
+        error_data = {
+            "success": False,
+            "event_type": "ai_disabled",
+            "message": "AI replies are frozen; human reply monitoring is active",
+        }
+        if req.stream is False:
+            return error_data
+        async def frozen_gen():
+            yield chat_service.sse_format({"event_type": "ai_disabled", "data": error_data})
+        return StreamingResponse(frozen_gen(), media_type="text/event-stream")
+
     # 2) Get or create visitor (handles status reset if CLOSED)
     visitor, visitor_changed = await get_or_create_visitor(
         db=db,
@@ -689,31 +702,7 @@ async def staff_send_platform_message(
     passthrough_headers = {k: v for k, v in resp.headers.items() if k.lower() not in hop_by_hop}
     media_type = resp.headers.get("content-type")
 
-    # ============ 状态自动化: 人工回复成功 -> 该访客待处理工单自动流转 processing ============
-    # 转人工建单自动标记 pending_human (已实现); 人工只需选择"是否解决"等终态
     if resp.status_code == 200:
-        try:
-            from app.api.v1.endpoints.tickets import _apply_status_transition
-            from app.models.ticket import Ticket
-            pending = (
-                db.query(Ticket)
-                .filter(
-                    Ticket.visitor_id == visitor.id,
-                    Ticket.deleted_at.is_(None),
-                    Ticket.status.in_(["pending_human", "open"]),
-                )
-                .order_by(Ticket.created_at.desc())
-                .first()
-            )
-            if pending:
-                _apply_status_transition(
-                    db, pending, "processing",
-                    operator=None, operator_type="system",
-                    note="人工回复触发自动处理中",
-                )
-        except Exception:
-            db.rollback()
-
         # 方案B: 人工回复成功 -> 累计 staff 计数
         try:
             from app.services import message_stats_service
@@ -994,6 +983,11 @@ async def chat_completion_openai_compatible(
     """OpenAI-compatible chat completion endpoint."""
     # 1) Validate Platform API key and get project
     platform, project = chat_service.validate_platform_and_project(x_platform_api_key, db)
+    if settings.AI_REPLY_FROZEN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="AI replies are frozen; human reply monitoring is active",
+        )
 
     # 2) Extract messages from OpenAI format
     user_message, system_message, platform_open_id = chat_service.extract_messages_from_openai_format(

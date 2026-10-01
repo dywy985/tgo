@@ -46,6 +46,22 @@ export interface StaffQueryParams {
   offset?: number;
 }
 
+export type WecomIdentityStatus = 'unmatched' | 'missing_name' | 'ambiguous' | 'conflict' | 'auto_bound' | 'manual_bound' | 'ignored' | 'superseded';
+export interface WecomIdentityStaff { id: string; name: string | null; nickname: string | null; username: string; wecom_userid: string | null }
+export interface WecomIdentity {
+  id: string; userid: string; display_name: string | null; status: WecomIdentityStatus;
+  match_field: string | null; reason: string | null; first_seen: string; last_seen: string;
+  bound_staff: WecomIdentityStaff | null;
+  candidates: Array<{ staff_id: string; name: string; fields: string }>;
+}
+export interface WecomIdentityOverview {
+  platform: { id: string; name: string | null; connection_state: string; is_active: boolean };
+  settings: { auto_bind_enabled: boolean; match_fields: Array<'name' | 'nickname' | 'username'>; existing_binding_policy: 'replace' | 'preserve'; last_sync_at: string | null; last_sync_status: string; last_sync_error: string | null };
+  counts: { bound: number; pending: number; conflict: number; missing_name: number; ignored: number };
+  identities: WecomIdentity[];
+  staff: WecomIdentityStaff[];
+}
+
 // Visitor Assignment Rule Response
 export interface VisitorAssignmentRuleResponse {
   id: string;
@@ -132,6 +148,22 @@ export const staffApi = {
     return apiClient.get<StaffListResponse>(endpoint);
   },
 
+  async getWecomIdentityOverview(): Promise<WecomIdentityOverview> {
+    return apiClient.get<WecomIdentityOverview>('/v1/staff/wecom-userids/overview');
+  },
+
+  async updateWecomIdentitySettings(data: { platform_id: string; auto_bind_enabled: boolean; match_fields: Array<'name' | 'nickname' | 'username'>; existing_binding_policy: 'replace' | 'preserve' }): Promise<WecomIdentityOverview> {
+    return apiClient.put<WecomIdentityOverview>('/v1/staff/wecom-userids/settings', data);
+  },
+
+  async reconcileWecomIdentities(platformId: string): Promise<WecomIdentityOverview> {
+    return apiClient.post<WecomIdentityOverview>(`/v1/staff/wecom-userids/reconcile?platform_id=${encodeURIComponent(platformId)}`, {});
+  },
+
+  async handleWecomIdentity(identityId: string, action: 'bind' | 'unbind' | 'ignore' | 'resume', staffId?: string): Promise<WecomIdentityOverview> {
+    return apiClient.patch<WecomIdentityOverview>(`/v1/staff/wecom-userids/${identityId}`, { action, staff_id: staffId || null });
+  },
+
   /**
    * Get a single staff member by ID
    */
@@ -203,4 +235,3 @@ export const staffApi = {
 };
 
 export default staffApi;
-

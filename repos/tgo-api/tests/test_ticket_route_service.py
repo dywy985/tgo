@@ -129,6 +129,34 @@ def test_no_match_returns_none():
     assert resolve_ticket_route(db, project_id=pid, group_key="groupB") is None
 
 
+def test_same_platform_does_not_make_another_group_route_match():
+    pid = uuid4()
+    platform = uuid4()
+    route = _route(project_id=pid, platform_id=platform, group_key="groupA")
+
+    assert resolve_ticket_route(
+        StubDB([route]), project_id=pid, platform_id=platform, group_key="groupB"
+    ) is None
+
+
+def test_group_route_without_platform_matches_current_platform():
+    pid = uuid4()
+    route = _route(project_id=pid, platform_id=None, group_key="groupA")
+
+    assert resolve_ticket_route(
+        StubDB([route]), project_id=pid, platform_id=uuid4(), group_key="groupA"
+    ) is route
+
+
+def test_project_default_route_is_used_as_fallback():
+    pid = uuid4()
+    fallback = _route(project_id=pid)
+
+    assert resolve_ticket_route(
+        StubDB([fallback]), project_id=pid, platform_id=uuid4(), group_key="groupA"
+    ) is fallback
+
+
 # ---------------------------------------------------------------------------
 # resolve_scope_degrade_candidates
 # ---------------------------------------------------------------------------

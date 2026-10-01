@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional
 from uuid import UUID
 
 from fastapi import HTTPException
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.models import Ticket
@@ -27,6 +28,23 @@ def generate_ticket_number(
     date=true  → TK-20260828-0001（当天序号）
     date=false → TK-0001（全项目序号）
     """
+    # Multiple API replicas can create tickets for different monitor batches at
+    # the same time.  Serialize number allocation per project; the companion
+    # unique constraint remains the final integrity guard.
+    try:
+        if db.get_bind().dialect.name == "postgresql":
+            db.execute(
+                text(
+                    "SELECT pg_advisory_xact_lock("
+                    "hashtextextended(:project_key, 0))"
+                ),
+                {"project_key": str(project_id)},
+            )
+    except (AttributeError, NotImplementedError):
+        # Lightweight test doubles and non-PostgreSQL development databases do
+        # not expose PostgreSQL advisory locks.
+        pass
+
     fmt = number_format or {"prefix": "TK-", "date": True, "seq_digits": 4}
     prefix = fmt.get("prefix") or "TK-"
     seq_digits = int(fmt.get("seq_digits") or 4)
@@ -65,8 +83,8 @@ def create_ticket(
     description: str,
     category: str = "其他",
     priority: str = "normal",
-    source: str = "staff_manual",
-    status: str = "open",
+    source: str = "reply_monitor",
+    status: str = "pending_reply",
     visitor_id: Optional[UUID] = None,
     session_id: Optional[UUID] = None,
     platform_id: Optional[UUID] = None,
@@ -86,11 +104,13 @@ def create_ticket(
     自动填写：ai_fields（AI 显式结构化字段）+ 表单模板规则（ticket_autofill_service）
     优先级：显式传入参数 > ai_fields > 自动规则 > 默认值
 
-    status/source 受数据库 CheckConstraint 约束:
-      status ∈ {open, waiting_customer, pending_human, processing, resolved, closed, rejected}
-      source ∈ {ai_auto, manual_service, staff_manual}
-      priority ∈ {low, normal, high, urgent}
+    仅供人工回复监控自动建单调用。
     """
+    if source != "reply_monitor":
+        raise HTTPException(status_code=409, detail="工单系统仅接受人工回复监控自动建单")
+    if status != "pending_reply":
+        raise HTTPException(status_code=409, detail="新监控工单必须处于待回复状态")
+
     # H9: SLA 计算（按优先级分级，缺省回退单一 sla_timeout_minutes）
     sla_due_at = None
     try:

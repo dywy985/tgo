@@ -2,7 +2,7 @@ import React from 'react';
 import { NavLink } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Settings as SettingsIcon, Puzzle } from 'lucide-react';
-import { FiSettings, FiCpu, FiInfo, FiLogOut, FiUsers, FiUser, FiBell, FiMessageSquare } from 'react-icons/fi';
+import { FiSettings, FiCpu, FiInfo, FiLogOut, FiUsers, FiUser, FiBell, FiMessageSquare, FiLink } from 'react-icons/fi';
 import { useAuthStore } from '@/stores/authStore';
 import OnboardingSidebarPanel from '@/components/onboarding/OnboardingSidebarPanel';
 
@@ -20,6 +20,7 @@ const SettingsSidebar: React.FC<SettingsSidebarProps> = ({ className = '' }) => 
     { id: 'general', label: t('settings.menu.general', '通用') },
     { id: 'notifications', label: t('settings.menu.notifications', '消息通知') },
     { id: 'staff', label: t('settings.menu.staff', '人工坐席') },
+    { id: 'wecom-userids', label: '企微 UserID' },
     { id: 'providers', label: t('settings.menu.providers', '模型提供商') },
     { id: 'plugins', label: t('settings.menu.plugins', '插件管理') },
     { id: 'wecom-debug', label: '企微调试' },
@@ -29,7 +30,7 @@ const SettingsSidebar: React.FC<SettingsSidebarProps> = ({ className = '' }) => 
   // Filter settings items based on user role
   // Non-admin users cannot see 'staff' (人工坐席), 'providers' (模型提供商) and 'plugins' (插件管理)
   const items = allItems.filter(item => {
-    if (!isAdmin && (item.id === 'staff' || item.id === 'providers' || item.id === 'plugins')) {
+    if (!isAdmin && (item.id === 'staff' || item.id === 'wecom-userids' || item.id === 'providers' || item.id === 'plugins')) {
       return false;
     }
     return true;
@@ -40,6 +41,7 @@ const SettingsSidebar: React.FC<SettingsSidebarProps> = ({ className = '' }) => 
     general: <FiSettings className="w-4 h-4" />,
     notifications: <FiBell className="w-4 h-4" />,
     staff: <FiUsers className="w-4 h-4" />,
+    'wecom-userids': <FiLink className="w-4 h-4" />,
     providers: <FiCpu className="w-4 h-4" />,
     plugins: <Puzzle className="w-4 h-4" />,
     'wecom-debug': <FiMessageSquare className="w-4 h-4" />,

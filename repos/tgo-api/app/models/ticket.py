@@ -1,15 +1,11 @@
-"""Ticket models for problem tracking (工单系统).
-
-工单 = 需要处理（未解决/转人工）的客户问题的持久化记录。
-AI 直接解决且客户满意的问题不生成工单（保留在会话消息记录中）。
-"""
+"""人工回复监控专用工单模型。"""
 
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, Optional, Set
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -17,14 +13,11 @@ from app.core.database import Base
 
 
 class TicketStatus(str, Enum):
-    """工单状态 (简化: 无等待客户状态, 人工只操作终态)."""
+    """人工回复监控专用状态。"""
 
-    OPEN = "open"                 # 问题已记录，待处理
-    PENDING_HUMAN = "pending_human"        # 已发起转人工，等待客服接手
-    PROCESSING = "processing"     # 客服处理中
-    RESOLVED = "resolved"         # 已解决（resolve_type 区分 AI/人工）
-    CLOSED = "closed"             # 已归档（终态，前提是问题已解决）
-    REJECTED = "rejected"         # 判定无需处理/放弃
+    PENDING_REPLY = "pending_reply"
+    REPLIED = "replied"
+    ARCHIVED = "archived"
 
 
 class TicketPriority(str, Enum):
@@ -37,37 +30,21 @@ class TicketPriority(str, Enum):
 
 
 class TicketSource(str, Enum):
-    """工单来源."""
+    """仅保留人工回复监控自动建单。"""
 
-    AI_AUTO = "ai_auto"           # AI 会话判定未解决自动记录
-    MANUAL_SERVICE = "manual_service"  # 转人工
-    STAFF_MANUAL = "staff_manual"      # 坐席手动建单
-    PUBLIC_FORM = "public_form"        # 客户通过公开表单提交
-
-
-class TicketResolveType(str, Enum):
-    """解决方式."""
-
-    AI_RESOLVED = "ai_resolved"
-    HUMAN_RESOLVED = "human_resolved"
-    UNRESOLVED = "unresolved"
-    AUTO_CLOSED = "auto_closed"
+    REPLY_MONITOR = "reply_monitor"
 
 
 # 合法状态流转表（API 层校验，非法流转返回 400）
 TICKET_STATUS_TRANSITIONS: Dict[str, Set[str]] = {
-    "open": {"pending_human", "processing", "resolved", "closed", "rejected"},
-    "pending_human": {"open", "processing", "resolved", "closed", "rejected"},
-    "processing": {"resolved", "closed", "rejected"},
-    "resolved": {"open", "closed"},
-    "closed": {"open"},
-    "rejected": {"open"},
+    "pending_reply": {"replied"},
+    "replied": {"archived"},
+    "archived": {"replied"},
 }
 
 ALL_TICKET_STATUSES = {s.value for s in TicketStatus}
 ALL_TICKET_PRIORITIES = {p.value for p in TicketPriority}
 ALL_TICKET_SOURCES = {s.value for s in TicketSource}
-ALL_TICKET_RESOLVE_TYPES = {r.value for r in TicketResolveType}
 
 
 class Ticket(Base):
@@ -76,7 +53,7 @@ class Ticket(Base):
     __tablename__ = "api_tickets"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('open', 'pending_human', 'processing', 'resolved', 'closed', 'rejected')",
+            "status IN ('pending_reply', 'replied', 'archived')",
             name="chk_tickets_status",
         ),
         CheckConstraint(
@@ -84,17 +61,14 @@ class Ticket(Base):
             name="chk_tickets_priority",
         ),
         CheckConstraint(
-            "source IN ('ai_auto', 'manual_service', 'staff_manual', 'public_form')",
+            "source = 'reply_monitor'",
             name="chk_tickets_source",
-        ),
-        CheckConstraint(
-            "resolve_type IN ('ai_resolved', 'human_resolved', 'unresolved', 'auto_closed')",
-            name="chk_tickets_resolve_type",
         ),
         Index("ix_tickets_project_status_priority_created", "project_id", "status", "priority", "created_at"),
         Index("ix_tickets_visitor_created", "visitor_id", "created_at"),
         Index("ix_tickets_assignee_status", "assignee_id", "status"),
         Index("ix_tickets_project_category", "project_id", "category"),
+        UniqueConstraint("project_id", "number", name="uq_tickets_project_number"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -142,10 +116,9 @@ class Ticket(Base):
     )
 
     # 状态
-    status: Mapped[str] = mapped_column(String(30), nullable=False, default=TicketStatus.OPEN.value)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default=TicketStatus.PENDING_REPLY.value)
     priority: Mapped[str] = mapped_column(String(10), nullable=False, default=TicketPriority.NORMAL.value)
-    source: Mapped[str] = mapped_column(String(30), nullable=False, default=TicketSource.AI_AUTO.value)
-    resolve_type: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    source: Mapped[str] = mapped_column(String(30), nullable=False, default=TicketSource.REPLY_MONITOR.value)
 
     # AI 判定信息
     ai_summary: Mapped[Optional[Dict[str, Any]]] = mapped_column(
@@ -154,8 +127,8 @@ class Ticket(Base):
 
     # 时间与 SLA
     first_response_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
-    resolved_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
-    closed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    replied_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    archived_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     sla_due_at: Mapped[Optional[datetime]] = mapped_column(nullable=True, comment="= created_at + settings.sla_timeout_minutes")
 
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)

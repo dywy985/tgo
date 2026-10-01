@@ -20,7 +20,7 @@ from app.models import Staff, Ticket
 logger = get_logger("services.staff_notification")
 
 # 未完成工单状态集
-_UNFINISHED_STATUSES = ("open", "pending_human", "processing", "waiting_customer")
+_UNFINISHED_STATUSES = ("pending_reply",)
 
 
 def get_unfinished_tickets(db: Session, staff_id, project_id) -> list[Ticket]:

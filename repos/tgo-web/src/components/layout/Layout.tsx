@@ -3,6 +3,7 @@ import { Outlet } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import OnboardingWelcome from '@/components/onboarding/OnboardingWelcome';
 import { useOnboardingStore } from '@/stores/onboardingStore';
+import ConnectionHealthBanner from './ConnectionHealthBanner';
 
 /**
  * Main layout component with sidebar and content area
@@ -48,6 +49,7 @@ const Layout: React.FC = () => {
 
       {/* Onboarding Welcome Modal */}
       <OnboardingWelcome />
+      <ConnectionHealthBanner />
     </div>
   );
 };

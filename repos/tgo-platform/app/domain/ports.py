@@ -23,6 +23,26 @@ class TgoApiClient(Protocol):
     ) -> str:
         """Create a customer-facing ticket form URL."""
 
+    async def record_reply_monitor_event(self, *, platform_api_key: str, payload: dict) -> dict:
+        """Idempotently record one customer/staff message for human monitoring."""
+
+    async def bind_reply_monitor_owner_chat(
+        self, *, platform_api_key: str, message_id: str, visitor_id: str
+    ) -> dict:
+        """Attach the event's resolved owner to the corresponding visitor chat."""
+
+    async def record_reply_monitor_media(
+        self,
+        *,
+        platform_api_key: str,
+        message_id: str,
+        filename: str,
+        content_type: str,
+        content: bytes,
+        capture_source: str = "cache",
+    ) -> dict:
+        """Attach one sanitized-on-receipt image to a monitor event."""
+
 
 class SSEManager(Protocol):
     async def stream_events(self, frames: AsyncIterator[bytes]) -> AsyncIterator[StreamEvent]: ...

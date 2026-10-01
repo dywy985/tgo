@@ -7,7 +7,7 @@
   - 空值 = 通配
 
 匹配优先级（分数 + priority）：
-  visitor_key 匹配 +4 > group_key 匹配 +2 > platform_id 匹配 +2
+  visitor_key 匹配 +100 > group_key 匹配 +10 > platform_id 匹配 +1
   同级多条按 priority 降序取第一条。
 
 用途：
@@ -35,14 +35,25 @@ def _match_score(
     group_key: Optional[str],
     visitor_key: Optional[str],
 ) -> int:
-    """计算路由与上下文的匹配分。空值通配不加分；值精确匹配加分。"""
+    """计算路由与上下文的匹配分；不相容的非空条件直接排除。
+
+    路由字段为空表示通配。字段非空时必须与当前上下文完全一致，不能因为
+    platform_id 相同就把 A 群的规则误用于 B 群。
+    """
+    if route.platform_id is not None and route.platform_id != platform_id:
+        return -1
+    if route.group_key is not None and route.group_key != group_key:
+        return -1
+    if route.visitor_key is not None and route.visitor_key != visitor_key:
+        return -1
+
     score = 0
     if visitor_key and route.visitor_key and route.visitor_key == visitor_key:
-        score += 4
+        score += 100
     if group_key and route.group_key and route.group_key == group_key:
-        score += 2
+        score += 10
     if platform_id and route.platform_id and route.platform_id == platform_id:
-        score += 2
+        score += 1
     return score
 
 
@@ -78,8 +89,8 @@ def resolve_ticket_route(
         if score > best_score or (score == best_score and best is not None and route.priority > best.priority):
             best = route
             best_score = score
-    # score>0 才算命中：0 分 = 无任何维度精确匹配（全是通配），不得当作匹配
-    return best if best_score > 0 else None
+    # 全空规则是项目默认路由，只有所有非空条件都相容时才参与兜底。
+    return best if best_score >= 0 else None
 
 
 def resolve_scope_degrade_candidates(

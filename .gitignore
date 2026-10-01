@@ -50,6 +50,9 @@ coverage.xml
 *.py,cover
 .hypothesis/
 .pytest_cache/
+.pytest-temp-*/
+.poetry-cache/
+.venv-codex/
 
 # Translations
 *.mo
@@ -103,6 +106,7 @@ celerybeat.pid
 
 # Environments
 .env
+.env.aibot
 .env.dev
 .env.local
 .venv
@@ -174,3 +178,9 @@ repos/tgo-plugin-sdk/
 deploy_*.sh
 test_mirrors.sh
 test_ticket_api.sh
+
+# 本机诊断和测试缓存
+.codex-work/
+**/.pytest-tmp*/
+**/.pytest-temp*/
+**/node_modules/

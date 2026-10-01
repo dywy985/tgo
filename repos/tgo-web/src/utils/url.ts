@@ -12,9 +12,27 @@
 export const toAbsoluteApiUrl = (maybeRelative: string | undefined | null): string => {
   const input = (maybeRelative || '').toString();
   if (!input) return '';
+  const browserIsRemote = typeof window !== 'undefined' &&
+    !['localhost', '127.0.0.1'].includes(window.location.hostname);
+  const publicApiPath = (path: string): string | null => {
+    if (path.startsWith('/api/v1/')) return path;
+    if (path.startsWith('/v1/')) return `/api${path}`;
+    return null;
+  };
   // If already absolute (has a scheme), return as-is
   if (/^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(input)) {
+    if (browserIsRemote) {
+      const parsed = new URL(input);
+      if (['localhost', '127.0.0.1'].includes(parsed.hostname)) {
+        const path = publicApiPath(parsed.pathname);
+        if (path) return `${window.location.origin}${path}${parsed.search}${parsed.hash}`;
+      }
+    }
     return input;
+  }
+  if (browserIsRemote) {
+    const path = publicApiPath(input);
+    if (path) return `${window.location.origin}${path}`;
   }
 
   // Get API base URL with priority: runtime > build-time > default
@@ -29,4 +47,3 @@ export const toAbsoluteApiUrl = (maybeRelative: string | undefined | null): stri
   const path = input.startsWith('/') ? input : `/${input}`;
   return `${normalizedBase}${path}`;
 };
-

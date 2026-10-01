@@ -6,11 +6,13 @@
 from __future__ import annotations
 
 from datetime import datetime
+import csv
+import io
 from pathlib import Path
 from typing import List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -18,8 +20,9 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.logging import get_logger
-from app.core.security import get_current_active_user, require_permission
+from app.core.security import get_current_active_user, require_admin, require_permission
 from app.models import (
+    Platform,
     Staff,
     Ticket,
     TicketAttachment,
@@ -31,6 +34,7 @@ from app.models import (
 )
 from app.schemas import (
     TicketAssign,
+    TicketBulkArchive,
     TicketCommentCreate,
     TicketCommentResponse,
     TicketCreate,
@@ -47,6 +51,8 @@ from app.schemas import (
     TicketStatusChange,
     TicketUpdate,
 )
+from app.schemas.reply_monitor import ReplyMonitorTicketContext
+from app.services.reply_monitor_ticket_service import get_reply_monitor_ticket_context
 from app.services.ticket_service import generate_ticket_number
 
 logger = get_logger("endpoints.tickets")
@@ -114,7 +120,7 @@ def _apply_status_transition(
     operator: Optional[Staff] = None,
     operator_type: str = "staff",
     note: Optional[str] = None,
-    resolve_type: Optional[str] = None,
+    enforce_transition: bool = True,
 ) -> None:
     """状态流转：校验合法表 + 写审计 + 更新时间字段."""
     from_status = ticket.status
@@ -122,7 +128,7 @@ def _apply_status_transition(
         return
 
     allowed = TICKET_STATUS_TRANSITIONS.get(from_status, set())
-    if to_status not in allowed:
+    if enforce_transition and to_status not in allowed:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Illegal status transition: {from_status} -> {to_status}",
@@ -132,23 +138,18 @@ def _apply_status_transition(
     now = datetime.utcnow()
 
     # 时间字段维护
-    if to_status == "resolved":
-        ticket.resolved_at = now
+    if to_status == "replied":
+        ticket.replied_at = ticket.replied_at or now
         if ticket.first_response_at is None:
             ticket.first_response_at = now
-        ticket.resolve_type = resolve_type or (
-            "ai_resolved" if operator_type == "ai" else "human_resolved"
-        )
-    elif to_status == "closed":
-        ticket.closed_at = now
-    elif to_status in ("processing", "pending_human"):
-        if ticket.first_response_at is None:
-            ticket.first_response_at = now
-    elif to_status == "open" and from_status in ("resolved", "closed", "rejected"):
-        # reopen
-        ticket.resolved_at = None
-        ticket.closed_at = None
-        ticket.resolve_type = None
+        if from_status == "archived":
+            ticket.archived_at = None
+    elif to_status == "archived":
+        ticket.archived_at = now
+    elif to_status == "pending_reply":
+        ticket.replied_at = None
+        ticket.first_response_at = None
+        ticket.archived_at = None
 
     db.add(
         TicketStatusHistory(
@@ -168,6 +169,47 @@ def _apply_status_transition(
 # ---------------------------------------------------------------------------
 # Tickets CRUD
 # ---------------------------------------------------------------------------
+
+@router.post("/bulk/archive", response_model=List[TicketResponse])
+async def bulk_archive_tickets(
+    payload: TicketBulkArchive,
+    db: Session = Depends(get_db),
+    current_user: Staff = Depends(require_permission("tickets:update")),
+) -> List[TicketResponse]:
+    """原子批量归档；任一工单不是已回复状态则全部拒绝。"""
+    unique_ids = list(dict.fromkeys(payload.ticket_ids))
+    tickets = (
+        db.query(Ticket)
+        .filter(
+            Ticket.project_id == current_user.project_id,
+            Ticket.id.in_(unique_ids),
+            Ticket.deleted_at.is_(None),
+        )
+        .all()
+    )
+    if len(tickets) != len(unique_ids):
+        raise HTTPException(status_code=404, detail="部分工单不存在")
+    invalid = [ticket.number for ticket in tickets if ticket.status != "replied"]
+    if invalid:
+        raise HTTPException(
+            status_code=400,
+            detail=f"只有已回复工单可以归档: {', '.join(invalid)}",
+        )
+    now = datetime.utcnow()
+    for ticket in tickets:
+        ticket.status = "archived"
+        ticket.archived_at = now
+        db.add(TicketStatusHistory(
+            project_id=ticket.project_id,
+            ticket_id=ticket.id,
+            from_status="replied",
+            to_status="archived",
+            operator_id=current_user.id,
+            operator_type="staff",
+            note="后台批量归档",
+        ))
+    db.commit()
+    return [_fill_display_names(db, ticket) for ticket in tickets]
 
 @router.get("", response_model=TicketListResponse)
 async def list_tickets(
@@ -226,64 +268,8 @@ async def create_ticket(
     db: Session = Depends(get_db),
     current_user: Staff = Depends(require_permission("tickets:create")),
 ) -> TicketResponse:
-    """创建工单（手动建单 / 内部联动）. 按 form_schema 校验必填 + 生成可配置工单号."""
-    settings = _get_settings(db, current_user.project_id)
-    schema = settings.form_schema_list
-    form_keys = {f.get("key") for f in schema}
-
-    # 必填校验（内置字段 + 自定义字段）
-    for f in schema:
-        if f.get("required"):
-            key = f.get("key")
-            if key == "title" and not (ticket_data.title or "").strip():
-                raise HTTPException(status_code=400, detail=f"字段「{f.get('label', key)}」为必填")
-            if key == "description" and not (ticket_data.description or "").strip():
-                raise HTTPException(status_code=400, detail=f"字段「{f.get('label', key)}」为必填")
-            if key not in ("title", "description") and key in form_keys:
-                val = (ticket_data.custom_fields or {}).get(key) if key not in ("category", "priority", "assignee_id", "group_key") else getattr(ticket_data, key, None)
-                if val is None or val == "":
-                    raise HTTPException(status_code=400, detail=f"字段「{f.get('label', key)}」为必填")
-
-    # 自定义字段只保留 schema 中定义的 key
-    custom_fields = ticket_data.custom_fields or {}
-    if custom_fields:
-        custom_fields = {k: v for k, v in custom_fields.items() if k in form_keys}
-
-    ticket = Ticket(
-        project_id=current_user.project_id,
-        number=generate_ticket_number(db, current_user.project_id, settings.number_format_dict),
-        title=ticket_data.title,
-        description=ticket_data.description,
-        category=ticket_data.category or "other",
-        priority=ticket_data.priority,
-        source=ticket_data.source,
-        visitor_id=ticket_data.visitor_id,
-        session_id=ticket_data.session_id,
-        platform_id=ticket_data.platform_id,
-        group_key=ticket_data.group_key,
-        agent_id=ticket_data.agent_id,
-        assignee_id=ticket_data.assignee_id,
-        ai_summary=ticket_data.ai_summary,
-        custom_fields=custom_fields or None,
-        sla_due_at=ticket_data.sla_due_at,
-    )
-    db.add(ticket)
-    db.commit()
-    db.refresh(ticket)
-
-    db.add(
-        TicketStatusHistory(
-            project_id=ticket.project_id,
-            ticket_id=ticket.id,
-            from_status=None,
-            to_status=ticket.status,
-            operator_id=current_user.id,
-            operator_type="staff",
-            note="工单创建",
-        )
-    )
-    db.commit()
-    return _fill_display_names(db, ticket)
+    """监控工单只能由未回复扫描任务自动创建。"""
+    raise HTTPException(status_code=409, detail="监控工单只能由未回复监控自动创建")
 
 
 @router.get("/statistics", response_model=TicketStatisticsResponse)
@@ -309,22 +295,18 @@ async def ticket_statistics(
     for row in base.with_entities(Ticket.category, func.count()).group_by(Ticket.category).all():
         by_category[row[0]] = row[1]
 
-    unresolved_total = base.filter(Ticket.status.in_(["open", "pending_human", "processing"])).count()
-    pending_human_total = base.filter(Ticket.status == "pending_human").count()
-    ai_resolved_total = base.filter(Ticket.resolve_type == "ai_resolved").count()
-    human_resolved_total = base.filter(Ticket.resolve_type == "human_resolved").count()
-    handoff_count = base.filter(Ticket.source == "manual_service").count()
+    pending_reply_total = base.filter(Ticket.status == "pending_reply").count()
+    replied_total = base.filter(Ticket.status == "replied").count()
+    archived_total = base.filter(Ticket.status == "archived").count()
 
     return TicketStatisticsResponse(
         total=total,
         by_status=by_status,
         by_priority=by_priority,
         by_category=by_category,
-        unresolved_total=unresolved_total,
-        pending_human_total=pending_human_total,
-        ai_resolved_total=ai_resolved_total,
-        human_resolved_total=human_resolved_total,
-        handoff_rate=round(handoff_count / total, 4) if total else 0.0,
+        pending_reply_total=pending_reply_total,
+        replied_total=replied_total,
+        archived_total=archived_total,
     )
 
 
@@ -507,6 +489,61 @@ async def create_route(
     return TicketRouteResponse.model_validate(route)
 
 
+@router.post("/routes/import")
+async def import_routes(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: Staff = Depends(require_permission("tickets:update")),
+) -> dict:
+    """CSV upsert for group-owner routes; invalid rows are reported independently."""
+    try:
+        raw = await file.read()
+        reader = csv.DictReader(io.StringIO(raw.decode("utf-8-sig")))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="CSV must be UTF-8") from exc
+    succeeded, errors = 0, []
+    for line, row in enumerate(reader, start=2):
+        try:
+            group_key = (row.get("group_key") or "").strip()
+            if not group_key:
+                raise ValueError("group_key is required")
+            platform_id = UUID(row["platform_id"].strip()) if (row.get("platform_id") or "").strip() else None
+            if platform_id and not db.query(Platform.id).filter(
+                Platform.id == platform_id,
+                Platform.project_id == current_user.project_id,
+                Platform.deleted_at.is_(None),
+            ).first():
+                raise ValueError("platform_id does not match an active project platform")
+            priority = int((row.get("priority") or "10").strip())
+            staff = None
+            if (row.get("staff_id") or "").strip():
+                staff = db.query(Staff).filter(Staff.id == UUID(row["staff_id"].strip()), Staff.project_id == current_user.project_id, Staff.deleted_at.is_(None)).first()
+            elif (row.get("wecom_userid") or "").strip():
+                staff = db.query(Staff).filter(Staff.wecom_userid == row["wecom_userid"].strip(), Staff.project_id == current_user.project_id, Staff.deleted_at.is_(None)).first()
+            if not staff:
+                raise ValueError("staff_id/wecom_userid does not match an active project staff")
+            route = db.query(TicketRoute).filter(
+                TicketRoute.project_id == current_user.project_id,
+                TicketRoute.platform_id == platform_id,
+                TicketRoute.group_key == group_key,
+                TicketRoute.visitor_key.is_(None),
+                TicketRoute.deleted_at.is_(None),
+            ).first()
+            if not route:
+                route = TicketRoute(project_id=current_user.project_id, platform_id=platform_id, group_key=group_key,
+                                    visitor_key=None, staff_name=staff.name or staff.nickname or staff.username)
+                db.add(route)
+            route.staff_id = staff.id
+            route.wecom_userid = staff.wecom_userid
+            route.staff_name = staff.name or staff.nickname or staff.username
+            route.priority = priority
+            succeeded += 1
+        except Exception as exc:
+            errors.append({"line": line, "error": str(exc), "row": row})
+    db.commit()
+    return {"success_count": succeeded, "error_count": len(errors), "errors": errors}
+
+
 @router.patch("/routes/{route_id}", response_model=TicketRouteResponse)
 async def update_route(
     route_id: UUID,
@@ -603,7 +640,28 @@ async def get_ticket_attachment(
         media_type=attachment.content_type,
         filename=attachment.original_name,
         content_disposition_type="inline",
+        headers={
+            "Cache-Control": "private, no-store",
+            "Pragma": "no-cache",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
+
+
+@router.get("/{ticket_id}/monitor-context", response_model=ReplyMonitorTicketContext)
+async def get_ticket_monitor_context(
+    ticket_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: Staff = Depends(require_permission("tickets:read")),
+) -> ReplyMonitorTicketContext:
+    """Return the reply-monitor batch and complete event timeline."""
+    ticket = _get_owned_ticket(db, current_user.project_id, ticket_id)
+    context = get_reply_monitor_ticket_context(
+        db, current_user.project_id, ticket, current_staff=current_user
+    )
+    if context is None:
+        raise HTTPException(status_code=404, detail="Reply monitor context not found")
+    return context
 
 
 @router.get("/{ticket_id}", response_model=TicketResponse)
@@ -686,6 +744,23 @@ async def update_ticket(
     return _fill_display_names(db, ticket)
 
 
+@router.delete(
+    "/{ticket_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+async def delete_ticket(
+    ticket_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: Staff = Depends(require_admin()),
+) -> Response:
+    """管理员软删除当前项目中的工单."""
+    ticket = _get_owned_ticket(db, current_user.project_id, ticket_id)
+    ticket.deleted_at = datetime.utcnow()
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.post("/{ticket_id}/assign", response_model=TicketResponse)
 async def assign_ticket(
     ticket_id: UUID,
@@ -708,8 +783,14 @@ async def change_ticket_status(
     db: Session = Depends(get_db),
     current_user: Staff = Depends(require_permission("tickets:update")),
 ) -> TicketResponse:
-    """状态流转（合法流转表校验 + 审计）."""
+    """状态流转；管理员可自由调整，普通客服仍受合法流转表限制."""
     ticket = _get_owned_ticket(db, current_user.project_id, ticket_id)
+    is_admin = current_user.role == "admin"
+    if ticket.status == "pending_reply" and not is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="待回复工单只能在检测到客服真实回复后由系统自动流转",
+        )
     _apply_status_transition(
         db,
         ticket,
@@ -717,6 +798,7 @@ async def change_ticket_status(
         operator=current_user,
         operator_type=change.operator_type,
         note=change.note,
+        enforce_transition=not is_admin,
     )
     return _fill_display_names(db, ticket)
 

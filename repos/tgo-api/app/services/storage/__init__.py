@@ -37,7 +37,7 @@ def get_storage_backend() -> StorageBackend:
     
     # Default to local storage
     return LocalStorageBackend(
-        base_path=getattr(settings, "UPLOAD_DIR", "./uploads"),
+        base_path=settings.UPLOAD_BASE_DIR,
         api_base_url=settings.API_BASE_URL,
     )
 

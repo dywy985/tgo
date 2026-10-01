@@ -4,8 +4,9 @@ from datetime import datetime, timedelta
 from typing import Dict, List
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -14,12 +15,14 @@ from app.core.logging import get_logger
 from app.core.security import (
     authenticate_user,
     create_access_token,
+    create_refresh_token,
     get_current_active_user,
     get_password_hash,
     require_permission,
     require_admin,
+    verify_refresh_token,
 )
-from app.models import Staff
+from app.models import Platform, PlatformConnectionAudit, Staff, WeComDiscoveredIdentity
 from app.models.visitor_assignment_rule import VisitorAssignmentRule
 from app.services.queue_trigger_service import trigger_queue_for_staff
 from app.services.wukongim_client import wukongim_client
@@ -47,6 +50,24 @@ logger = get_logger("endpoints.staff")
 router = APIRouter()
 
 
+def _set_refresh_cookie(response: Response, staff: Staff) -> None:
+    """Issue a rotating HttpOnly refresh cookie for a staff session."""
+    refresh_token = create_refresh_token(
+        subject=staff.username,
+        project_id=staff.project_id,
+        role=staff.role,
+    )
+    response.set_cookie(
+        key=settings.REFRESH_COOKIE_NAME,
+        value=refresh_token,
+        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+        path="/",
+        secure=settings.REFRESH_COOKIE_SECURE,
+        httponly=True,
+        samesite="lax",
+    )
+
+
 def _build_staff_response(staff: Staff, is_working: bool = None) -> StaffResponse:
     """Build StaffResponse with optional is_working field."""
     data = {
@@ -57,6 +78,7 @@ def _build_staff_response(staff: Staff, is_working: bool = None) -> StaffRespons
         "nickname": staff.nickname,
         "avatar_url": staff.avatar_url,
         "description": staff.description,
+        "wecom_userid": staff.wecom_userid,
         "role": staff.role,
         "status": staff.status,
         "is_active": staff.is_active,
@@ -75,6 +97,7 @@ def _build_staff_response(staff: Staff, is_working: bool = None) -> StaffRespons
     responses=AUTH_RESPONSES
 )
 async def login_staff(
+    response: Response,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ) -> StaffLoginResponse:
@@ -84,11 +107,11 @@ async def login_staff(
     Authenticate staff member and return JWT access token.
     Also registers/synchronizes user with WuKongIM for instant messaging.
     """
-    logger.info(f"Staff login attempt for username: {form_data.username}")
+    logger.info("Staff login attempt")
 
     user = authenticate_user(db, form_data.username, form_data.password)
     if not user:
-        logger.warning(f"Failed login attempt for username: {form_data.username}")
+        logger.warning("Failed staff login attempt")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
@@ -102,6 +125,7 @@ async def login_staff(
         role=user.role,
         expires_delta=access_token_expires
     )
+    _set_refresh_cookie(response, user)
 
     # Register/synchronize user with WuKongIM for instant messaging
     # Use staff ID with "-staff" suffix to ensure unique identification
@@ -125,7 +149,7 @@ async def login_staff(
         # WuKongIM sync failure should not prevent login
         # The user can still use the main application features
 
-    logger.info(f"Successful login for user: {user.username}")
+    logger.info("Successful staff login")
 
     # 登录后：提醒未完成工单（best-effort，不阻塞登录）
     try:
@@ -140,6 +164,70 @@ async def login_staff(
         token_type="bearer",
         expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         staff=StaffResponse.model_validate(user)
+    )
+
+
+@router.post(
+    "/refresh",
+    response_model=StaffLoginResponse,
+    responses=AUTH_RESPONSES,
+)
+async def refresh_staff_session(
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> StaffLoginResponse:
+    """Rotate the refresh cookie and issue a new short-lived access token."""
+    refresh_token = request.cookies.get(settings.REFRESH_COOKIE_NAME)
+    payload = verify_refresh_token(refresh_token) if refresh_token else None
+    username = payload.get("sub") if payload else None
+    if not username:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not refresh credentials",
+        )
+
+    user = db.query(Staff).filter(
+        Staff.username == username,
+        Staff.deleted_at.is_(None),
+    ).first()
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not refresh credentials",
+        )
+
+    token_project_id = payload.get("project_id")
+    if token_project_id and token_project_id != str(user.project_id):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not refresh credentials",
+        )
+
+    access_token = create_access_token(
+        subject=user.username,
+        project_id=user.project_id,
+        role=user.role,
+    )
+    _set_refresh_cookie(response, user)
+    response.headers["Cache-Control"] = "no-store"
+    return StaffLoginResponse(
+        access_token=access_token,
+        token_type="bearer",
+        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        staff=StaffResponse.model_validate(user),
+    )
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout_staff(response: Response) -> None:
+    """Clear the browser refresh cookie without requiring a valid access token."""
+    response.delete_cookie(
+        key=settings.REFRESH_COOKIE_NAME,
+        path="/",
+        secure=settings.REFRESH_COOKIE_SECURE,
+        httponly=True,
+        samesite="lax",
     )
 
 
@@ -234,6 +322,16 @@ async def create_staff(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Username already exists"
         )
+
+    normalized_wecom_userid = str(staff_data.wecom_userid or "").strip() or None
+    if normalized_wecom_userid:
+        duplicate = db.query(Staff).filter(
+            Staff.project_id == current_user.project_id,
+            Staff.deleted_at.is_(None),
+            func.lower(Staff.wecom_userid) == normalized_wecom_userid.lower(),
+        ).first()
+        if duplicate:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="该企微 UserID 已绑定其他客服")
     
     # Hash password
     password_hash = get_password_hash(staff_data.password)
@@ -249,7 +347,7 @@ async def create_staff(
         description=staff_data.description,
         role=staff_data.role,
         status=staff_data.status,
-        wecom_userid=staff_data.wecom_userid,
+        wecom_userid=normalized_wecom_userid,
     )
     
     db.add(staff)
@@ -456,6 +554,20 @@ async def update_staff(
     
     # Update fields
     update_data = staff_data.model_dump(exclude_unset=True)
+
+    old_wecom_userid = staff.wecom_userid
+    if "wecom_userid" in update_data:
+        normalized_wecom_userid = str(update_data.get("wecom_userid") or "").strip() or None
+        if normalized_wecom_userid:
+            duplicate = db.query(Staff).filter(
+                Staff.project_id == current_user.project_id,
+                Staff.id != staff.id,
+                Staff.deleted_at.is_(None),
+                func.lower(Staff.wecom_userid) == normalized_wecom_userid.lower(),
+            ).first()
+            if duplicate:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="该企微 UserID 已绑定其他客服")
+        update_data["wecom_userid"] = normalized_wecom_userid
     
     # Handle password update
     if "password" in update_data:
@@ -463,6 +575,41 @@ async def update_staff(
     
     for field, value in update_data.items():
         setattr(staff, field, value)
+
+    if "wecom_userid" in update_data and old_wecom_userid != staff.wecom_userid:
+        platform = db.query(Platform).filter(
+            Platform.project_id == current_user.project_id,
+            Platform.type == "wecom_bot",
+            Platform.is_active.is_(True),
+            Platform.deleted_at.is_(None),
+        ).first()
+        if platform:
+            db.add(PlatformConnectionAudit(
+                project_id=platform.project_id, platform_id=platform.id,
+                actor_staff_id=current_user.id, action="wecom_identity_manual_edit",
+                config_version=platform.connection_version,
+                details={"staff_id": str(staff.id), "old_userid": old_wecom_userid, "new_userid": staff.wecom_userid},
+            ))
+            if old_wecom_userid:
+                previous = db.query(WeComDiscoveredIdentity).filter(
+                    WeComDiscoveredIdentity.platform_id == platform.id,
+                    WeComDiscoveredIdentity.bound_staff_id == staff.id,
+                    func.lower(WeComDiscoveredIdentity.userid) == old_wecom_userid.lower(),
+                ).first()
+                if previous:
+                    previous.status = "superseded" if staff.wecom_userid else "unmatched"
+                    previous.bound_staff_id = None
+                    previous.match_reason = "管理员在客服资料中修改绑定" if staff.wecom_userid else "管理员在客服资料中解绑"
+            if staff.wecom_userid:
+                discovered = db.query(WeComDiscoveredIdentity).filter(
+                    WeComDiscoveredIdentity.platform_id == platform.id,
+                    func.lower(WeComDiscoveredIdentity.userid) == staff.wecom_userid.lower(),
+                ).first()
+                if discovered:
+                    discovered.status = "manual_bound"
+                    discovered.bound_staff_id = staff.id
+                    discovered.match_field = "manual"
+                    discovered.match_reason = "管理员在客服资料中手工绑定"
     
     staff.updated_at = datetime.utcnow()
     

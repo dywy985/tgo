@@ -1,7 +1,9 @@
 """FastAPI application entry point with extension support."""
 
 from typing import Callable, List, Optional, Any
-from fastapi import FastAPI, HTTPException
+import hashlib
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRouter
@@ -21,6 +23,7 @@ from app.core.exceptions import (
 from app.schemas.base import ErrorResponse
 from app.core.logging import setup_logging
 from app.services.platform_type_seed import ensure_platform_types_seed
+from app.core.rate_limit import SlidingWindowLimiter, sensitive_route_policy
 
 
 # Setup logging
@@ -30,6 +33,8 @@ setup_logging()
 import logging
 logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 logging.getLogger("uvicorn").setLevel(logging.WARNING)
+security_logger = logging.getLogger("security.audit")
+_sensitive_limiter = SlidingWindowLimiter()
 
 
 def create_app(
@@ -81,6 +86,36 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @application.middleware("http")
+    async def protect_sensitive_routes(request: Request, call_next):
+        policy = sensitive_route_policy(request.url.path)
+        client_ip = request.client.host if request.client else "unknown"
+        client_marker = hashlib.sha256(client_ip.encode("utf-8")).hexdigest()[:12]
+        if settings.RATE_LIMIT_ENABLED and policy:
+            route_name, limit = policy
+            if not _sensitive_limiter.allow(
+                f"{route_name}:{client_marker}", limit=limit, window_seconds=60
+            ):
+                security_logger.warning(
+                    "rate_limit route=%s client=%s", route_name, client_marker
+                )
+                return JSONResponse(
+                    status_code=429,
+                    content={"detail": "Too many requests"},
+                    headers={"Retry-After": "60"},
+                )
+        response = await call_next(request)
+        if (
+            settings.SECURITY_AUDIT_AUTH_FAILURES
+            and policy
+            and response.status_code in {401, 403}
+        ):
+            security_logger.warning(
+                "auth_failure route=%s client=%s status=%d",
+                policy[0], client_marker, response.status_code,
+            )
+        return response
 
     # Add additional middlewares (before exception handlers)
     if additional_middlewares:
@@ -233,18 +268,29 @@ def create_app(
 
         # Start periodic auto AI fallback task (best-effort)
         try:
-            from app.tasks.auto_fallback_to_ai import start_auto_fallback_to_ai_task
-            await start_auto_fallback_to_ai_task()
+            if not settings.AI_REPLY_FROZEN:
+                from app.tasks.auto_fallback_to_ai import start_auto_fallback_to_ai_task
+                await start_auto_fallback_to_ai_task()
         except Exception:
             # best-effort; don't block startup
             pass
 
-        # Start periodic ticket auto-resolve task (H8, best-effort)
         try:
-            from app.tasks.ticket_auto_resolve import start_ticket_auto_resolve_task
-            await start_ticket_auto_resolve_task()
+            from app.tasks.reply_monitor_reminders import start_reply_monitor_task
+            start_reply_monitor_task()
         except Exception:
-            # best-effort; don't block startup
+            pass
+
+        try:
+            from app.tasks.reply_monitor_retention import start_reply_monitor_retention_task
+            start_reply_monitor_retention_task()
+        except Exception:
+            pass
+
+        try:
+            from app.tasks.platform_connection_monitor import start_platform_connection_monitor
+            start_platform_connection_monitor()
+        except Exception:
             pass
 
         # Run additional startup hooks
@@ -271,6 +317,21 @@ def create_app(
     @application.on_event("shutdown")
     async def shutdown_event():
         """Application shutdown event: stop background tasks."""
+        try:
+            from app.tasks.reply_monitor_reminders import stop_reply_monitor_task
+            await stop_reply_monitor_task()
+        except Exception:
+            pass
+        try:
+            from app.tasks.reply_monitor_retention import stop_reply_monitor_retention_task
+            await stop_reply_monitor_retention_task()
+        except Exception:
+            pass
+        try:
+            from app.tasks.platform_connection_monitor import stop_platform_connection_monitor
+            await stop_platform_connection_monitor()
+        except Exception:
+            pass
         # Stop periodic AIProvider sync task (best-effort)
         try:
             from app.tasks.sync_ai_providers import stop_ai_provider_sync_task
@@ -310,13 +371,6 @@ def create_app(
         try:
             from app.tasks.auto_fallback_to_ai import stop_auto_fallback_to_ai_task
             await stop_auto_fallback_to_ai_task()
-        except Exception:
-            pass
-
-        # Stop periodic ticket auto-resolve task (H8, best-effort)
-        try:
-            from app.tasks.ticket_auto_resolve import stop_ticket_auto_resolve_task
-            await stop_ticket_auto_resolve_task()
         except Exception:
             pass
 

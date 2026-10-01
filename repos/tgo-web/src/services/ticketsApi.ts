@@ -4,21 +4,16 @@
  */
 
 import { BaseApiService } from './base/BaseApiService';
+import { apiClient } from './api';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export type TicketStatus =
-  | 'open'
-  | 'pending_human'
-  | 'processing'
-  | 'resolved'
-  | 'closed'
-  | 'rejected';
+export type TicketStatus = 'pending_reply' | 'replied' | 'archived';
 
 export type TicketPriority = 'low' | 'normal' | 'high' | 'urgent';
-export type TicketSource = 'ai_auto' | 'manual_service' | 'staff_manual' | 'public_form';
+export type TicketSource = 'reply_monitor';
 
 export interface TicketAttachment {
   id: string;
@@ -68,15 +63,14 @@ export interface Ticket {
   status: TicketStatus;
   priority: TicketPriority;
   source: TicketSource;
-  resolve_type?: string | null;
   ai_summary?: TicketSummary | null;
   custom_fields?: Record<string, unknown> | null;
   contact_name?: string | null;
   contact_phone?: string | null;
   attachments?: TicketAttachment[];
   first_response_at?: string | null;
-  resolved_at?: string | null;
-  closed_at?: string | null;
+  replied_at?: string | null;
+  archived_at?: string | null;
   sla_due_at?: string | null;
   created_at: string;
   updated_at: string;
@@ -115,6 +109,53 @@ export interface TicketHistory {
   operator_type: string;
   note?: string | null;
   created_at: string;
+}
+
+export interface ReplyMonitorTimelineEvent {
+  id: string;
+  message_id: string;
+  sender_kind: 'customer' | 'staff' | 'system';
+  sender_id?: string | null;
+  sender_name?: string | null;
+  responsible_staff_id?: string | null;
+  message_type: string;
+  content_summary?: string | null;
+  occurred_at: string;
+  metadata: Record<string, unknown>;
+  media: Array<{
+    id: string;
+    content_type: string;
+    file_size: number;
+    width: number;
+    height: number;
+    url: string;
+    status: string;
+    capture_source: 'cache' | 'screen_crop' | 'recovered_cache' | 'recovered_screen_crop';
+  }>;
+  media_status: 'ready' | 'recovering' | 'missing' | 'failed';
+  capture_source?: 'cache' | 'screen_crop' | 'recovered_cache' | 'recovered_screen_crop' | null;
+}
+
+export interface ReplyMonitorTicketContext {
+  ticket_id: string;
+  ticket_number: string;
+  batch: {
+    id: string;
+    status: string;
+    conversation_key: string;
+    conversation_type: string;
+    conversation_name?: string | null;
+    responsible_staff_id?: string | null;
+    actual_reply_staff_id?: string | null;
+    first_customer_at: string;
+    first_reply_at?: string | null;
+    reminder_count: number;
+    platform_id: string;
+  };
+  timeline: ReplyMonitorTimelineEvent[];
+  wecom_action: 'available' | 'syncing' | 'ambiguous' | 'unsupported';
+  can_dispatch_to_wecom: boolean;
+  wecom_action_reason?: string | null;
 }
 
 export interface TicketSettings {
@@ -156,11 +197,9 @@ export interface TicketStatistics {
   by_status: Record<string, number>;
   by_priority: Record<string, number>;
   by_category: Record<string, number>;
-  unresolved_total: number;
-  pending_human_total: number;
-  ai_resolved_total: number;
-  human_resolved_total: number;
-  handoff_rate: number;
+  pending_reply_total: number;
+  replied_total: number;
+  archived_total: number;
 }
 
 export interface TicketListQuery {
@@ -189,7 +228,9 @@ class TicketsApiServiceClass extends BaseApiService {
     TICKET_STATUS: (id: string) => `/${this.apiVersion}/tickets/${id}/status`,
     TICKET_COMMENTS: (id: string) => `/${this.apiVersion}/tickets/${id}/comments`,
     TICKET_HISTORY: (id: string) => `/${this.apiVersion}/tickets/${id}/history`,
+    TICKET_MONITOR_CONTEXT: (id: string) => `/${this.apiVersion}/tickets/${id}/monitor-context`,
     TICKET_STATISTICS: `/${this.apiVersion}/tickets/statistics`,
+    TICKET_BULK_ARCHIVE: `/${this.apiVersion}/tickets/bulk/archive`,
     TICKET_SETTINGS: `/${this.apiVersion}/tickets/settings`,
     TICKET_ROUTES: `/${this.apiVersion}/tickets/routes`,
     TICKET_ROUTE: (id: string) => `/${this.apiVersion}/tickets/routes/${id}`,
@@ -228,6 +269,10 @@ class TicketsApiServiceClass extends BaseApiService {
 
   async updateTicket(id: string, data: Partial<Ticket>): Promise<Ticket> {
     return this.patch<Ticket>(this.endpoints.TICKET(id), data);
+  }
+
+  async deleteTicket(id: string): Promise<void> {
+    return this.delete<void>(this.endpoints.TICKET(id));
   }
 
   async createTicketWithFields(data: {
@@ -273,6 +318,10 @@ class TicketsApiServiceClass extends BaseApiService {
     });
   }
 
+  async bulkArchive(ticketIds: string[]): Promise<Ticket[]> {
+    return this.post<Ticket[]>(this.endpoints.TICKET_BULK_ARCHIVE, { ticket_ids: ticketIds });
+  }
+
   async addComment(id: string, content: string, isInternal: boolean = true): Promise<TicketComment> {
     return this.post<TicketComment>(this.endpoints.TICKET_COMMENTS(id), { content, is_internal: isInternal });
   }
@@ -283,6 +332,10 @@ class TicketsApiServiceClass extends BaseApiService {
 
   async getHistory(id: string): Promise<TicketHistory[]> {
     return this.get<TicketHistory[]>(this.endpoints.TICKET_HISTORY(id));
+  }
+
+  async getMonitorContext(id: string): Promise<ReplyMonitorTicketContext> {
+    return this.get<ReplyMonitorTicketContext>(this.endpoints.TICKET_MONITOR_CONTEXT(id));
   }
 
   async getStatistics(): Promise<TicketStatistics> {
@@ -303,6 +356,12 @@ class TicketsApiServiceClass extends BaseApiService {
 
   async listRoutes(): Promise<TicketRoute[]> {
     return this.get<TicketRoute[]>(this.endpoints.TICKET_ROUTES);
+  }
+
+  async importRoutes(file: File): Promise<{success_count:number; error_count:number; errors:Array<{line:number;error:string}>}> {
+    const form = new FormData();
+    form.append('file', file);
+    return apiClient.postFormData('/v1/tickets/routes/import', form);
   }
 
   async listRouteGroups(): Promise<Array<{ group_key: string; group_name: string }>> {
@@ -328,21 +387,15 @@ export const ticketsApiService = new TicketsApiServiceClass();
 
 // 状态/优先级展示映射
 export const TICKET_STATUS_LABELS: Record<TicketStatus, string> = {
-  open: '未处理',
-  pending_human: '待人工',
-  processing: '处理中',
-  resolved: '已解决',
-  closed: '已归档',
-  rejected: '已拒绝',
+  pending_reply: '待回复',
+  replied: '已回复',
+  archived: '已归档',
 };
 
 export const TICKET_STATUS_COLORS: Record<TicketStatus, string> = {
-  open: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400',
-  pending_human: 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-400',
-  processing: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-400',
-  resolved: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400',
-  closed: 'bg-gray-200 text-gray-600 dark:bg-gray-700/50 dark:text-gray-400',
-  rejected: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400',
+  pending_reply: 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-400',
+  replied: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400',
+  archived: 'bg-gray-200 text-gray-600 dark:bg-gray-700/50 dark:text-gray-400',
 };
 
 export const TICKET_PRIORITY_LABELS: Record<TicketPriority, string> = {

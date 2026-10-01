@@ -412,17 +412,8 @@ async def _handle_manual_service_request(event: AIServiceEvent, project: Project
 
 # ============ H11: 建单策略开关（settings 不存在或开关 True 时建单）============
 def _ticket_policy_enabled(db: Session, project_id: UUID, key: str) -> bool:
-    """读取 api_ticket_settings 建单策略开关。settings 不存在 → 默认开启。"""
-    try:
-        from app.models import TicketSettings
-
-        st = db.query(TicketSettings).filter(TicketSettings.project_id == project_id).first()
-        if st is None:
-            return True
-        return bool(getattr(st, key, True))
-    except Exception as e:
-        logger.warning("[TICKET] 策略开关读取失败(%s): %s", key, e)
-        return True
+    """旧 AI/转人工建单来源已停用；只允许 reply_monitor 自动建单。"""
+    return False
 
 
 # ============ H3: 新工单提醒（路由匹配 → 站内 + 记录企微 userid）============

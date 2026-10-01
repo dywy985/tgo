@@ -6,8 +6,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+import httpx
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import settings
@@ -24,6 +25,27 @@ _BUSINESS_KW = ["激活", "授权", "激活码", "工单", "价格", "多少钱"
                 "到期", "续费", "退款", "套餐", "报价", "试用", "加密狗", "注册机", "算号", "锁", "授权文件"]
 _QUESTION_KW = ["怎么", "如何", "请问", "为什么", "能不能", "有没有", "多少", "哪里", "什么", "能否", "是否"]
 _CHAT_KW = ["哈哈", "哈哈哈", "早上好", "晚上好", "中午好", "晚安", "收到", "在吗", "嗯嗯", "好的", "谢谢", "感谢", "哦"]
+
+_RETRYABLE_HTTP_STATUS_CODES = {408, 425, 429}
+_MAX_RETRY_DELAY_SECONDS = 300
+
+
+def _retry_delay_seconds(retry_count: int) -> int:
+    """Return exponential retry delay, capped at five minutes."""
+    safe_retry_count = max(0, min(int(retry_count or 0), 30))
+    return min(_MAX_RETRY_DELAY_SECONDS, max(1, 2**safe_retry_count))
+
+
+def _is_retryable_worktool_error(record: WeComInbox, error: Exception) -> bool:
+    """Classify transport failures and transient HTTP responses for WorkTool."""
+    if record.source_type != "worktool":
+        return False
+    if isinstance(error, httpx.TransportError):
+        return True
+    if isinstance(error, httpx.HTTPStatusError):
+        status_code = error.response.status_code
+        return status_code in _RETRYABLE_HTTP_STATUS_CODES or status_code >= 500
+    return False
 
 
 def _score_content(content: str, cfg: dict | None = None) -> int:
@@ -57,6 +79,7 @@ def _is_manual_service_request(content: str, cfg: dict | None = None) -> bool:
     return any(kw in content for kw in kws)
 from app.domain.ports import MessageNormalizer, TgoApiClient, SSEManager
 from app.domain.services.dispatcher import process_message
+from app.domain.services.monitoring import monitor_event_should_sync_to_owner_chat
 from app.infra.visitor_client import VisitorService
 from app.api.wecom_utils import get_wecom_visitor_profile
 
@@ -247,7 +270,8 @@ class WeComChannelListener:
 
         Strategy:
         - Fetch 'pending' first (oldest fetched_at first), FOR UPDATE SKIP LOCKED
-        - If under-filled, add eligible 'failed' with exponential backoff, SKIP LOCKED
+        - If under-filled, add retryable failures and bounded legacy failures with
+          exponential backoff, SKIP LOCKED
         """
         # Pending first
         pending = (
@@ -269,8 +293,13 @@ class WeComChannelListener:
                     select(WeComInbox)
                     .where(
                         WeComInbox.platform_id == platform.id,
-                        WeComInbox.status == "failed",
-                        WeComInbox.retry_count < max_retries,
+                        or_(
+                            WeComInbox.status == "retrying",
+                            and_(
+                                WeComInbox.status == "failed",
+                                WeComInbox.retry_count < max_retries,
+                            ),
+                        ),
                     )
                     .order_by(WeComInbox.processed_at.asc().nullsfirst())
                     .with_for_update(skip_locked=True)
@@ -279,7 +308,7 @@ class WeComChannelListener:
             ).scalars().all()
             now = datetime.now(timezone.utc)
             for record in failed:
-                delay = max(1, 2 ** int(record.retry_count or 0))
+                delay = _retry_delay_seconds(int(record.retry_count or 0))
                 if not record.processed_at or (now - record.processed_at).total_seconds() >= delay:
                     candidates.append(record)
                     if len(candidates) >= batch_size:
@@ -455,15 +484,25 @@ class WeComChannelListener:
             import httpx as _httpx
             base = getattr(settings, "wukongim_service_url", None) or "http://wukongim:5001"
             base = str(base).rstrip("/")
+            is_image = str(getattr(record, "msg_type", "") or "").lower() == "image"
+            raw = record.raw_payload or {}
+            parsed = raw.get("parsed") or {}
+            message_payload = {
+                "type": 2 if is_image else 1,
+                "content": "[图片]" if is_image else content,
+                "monitor_message_id": str(record.message_id),
+                "source_sender_name": raw.get("sender_name") or parsed.get("sender_name"),
+                "source_sender_kind": raw.get("sender_kind") or parsed.get("sender_kind"),
+            }
             payload_encoded = _b64.b64encode(
-                _json.dumps({"type": 1, "content": content}, ensure_ascii=False).encode("utf-8")
+                _json.dumps(message_payload, ensure_ascii=False).encode("utf-8")
             ).decode("utf-8")
             body = {
                 "payload": payload_encoded,
                 "from_uid": str(visitor.id),
                 "channel_id": f"{visitor.id}-vtr",
                 "channel_type": 251,
-                "client_msg_no": f"inbound_{uuid.uuid4().hex}",
+                "client_msg_no": f"worktool_{record.message_id}",
             }
             async with _httpx.AsyncClient(timeout=5) as client:
                 resp = await client.post(f"{base}/message/send", json=body)
@@ -508,9 +547,9 @@ class WeComChannelListener:
     async def _finalize_failure(self, session: AsyncSession, platform: _PlatformEntry, record: WeComInbox, error: Exception) -> None:
         """Mark record as failed with retry increment and error message, preserving logs."""
         print(f"[WECOM] Processing failed for {platform.id}: {error}")
-        record.status = "failed"
+        record.status = "retrying" if _is_retryable_worktool_error(record, error) else "failed"
         record.processed_at = datetime.now(timezone.utc)
-        record.retry_count = int((record.retry_count or 0)) + 1
+        record.retry_count = int(record.retry_count or 0) + 1
         record.error_message = str(error)[:2000]
         try:
             await session.commit()
@@ -614,6 +653,71 @@ class WeComChannelListener:
                 source_type = getattr(rec, "source_type", None) or p.platform_type or ""
 
                 try:
+                    # WorkTool monitor-only path: never enter AI/RAG/ack dispatch.
+                    if settings.ai_reply_frozen and source_type == "worktool":
+                        raw = rec.raw_payload or {}
+                        parsed = raw.get("parsed") or {}
+                        sender_kind = str(raw.get("sender_kind") or parsed.get("sender_kind") or ("staff" if rec.is_from_colleague else "customer"))
+                        room_type = raw.get("room_type") or parsed.get("room_type")
+                        is_group = room_type in (1, 3, "1", "3")
+                        conversation_key = str(raw.get("chat_id") or parsed.get("chatid") or rec.from_user)
+                        source_metadata = dict(raw.get("metadata") or parsed.get("metadata") or {})
+                        source_metadata["group_owner_userid"] = (
+                            source_metadata.get("group_owner_userid")
+                            or raw.get("group_owner_userid") or parsed.get("group_owner_userid") or parsed.get("owner_userid")
+                        )
+                        source_metadata["group_owner_name"] = (
+                            source_metadata.get("group_owner_name")
+                            or raw.get("group_owner_name") or parsed.get("group_owner_name") or parsed.get("owner_name")
+                        )
+                        if is_group and not (
+                            source_metadata.get("group_owner_userid") or source_metadata.get("group_owner_name")
+                        ):
+                            source_metadata["group_owner_diagnostic"] = "missing_owner_fields_from_worktool"
+                        monitor_payload = {
+                            "message_id": rec.message_id,
+                            "robot_id": source_metadata.get("robot_id"),
+                            "conversation_key": conversation_key,
+                            "conversation_type": "group" if is_group else "private",
+                            "conversation_name": raw.get("conv_name") or parsed.get("conv_name") or conversation_key,
+                            "sender_kind": sender_kind,
+                            "sender_id": raw.get("sender_id") or parsed.get("sender_id"),
+                            "sender_name": raw.get("sender_name") or parsed.get("sender_name"),
+                            "message_type": rec.msg_type or "other",
+                            "content_summary": rec.content or None,
+                            "current_content": raw.get("current_content") or parsed.get("current_content") or rec.content or None,
+                            "quoted_sender_id": raw.get("quoted_sender_id") or parsed.get("quoted_sender_id") or source_metadata.get("quoted_sender_id"),
+                            "quoted_sender_name": raw.get("quoted_sender_name") or parsed.get("quoted_sender_name") or source_metadata.get("quoted_sender_name"),
+                            "quoted_content": raw.get("quoted_content") or parsed.get("quoted_content") or source_metadata.get("quoted_content"),
+                            "quoted_message_type": raw.get("quoted_message_type") or parsed.get("quoted_message_type") or source_metadata.get("quoted_message_type"),
+                            "occurred_at": (rec.received_at or rec.fetched_at).isoformat(),
+                            "metadata": {
+                                **source_metadata,
+                                "channel_open_id": rec.from_user,
+                                "problem_score": raw.get("score", parsed.get("score")),
+                                "problem_threshold": 50,
+                                "media_only": str(rec.msg_type or "").lower() == "image",
+                            },
+                        }
+                        if not p.api_key:
+                            raise RuntimeError("WorkTool platform API key is missing")
+                        monitor_result = await self._tgo_api_client.record_reply_monitor_event(
+                            platform_api_key=p.api_key, payload=monitor_payload)
+                        if monitor_event_should_sync_to_owner_chat(
+                            monitor_result, sender_kind, monitor_payload["conversation_type"]
+                        ):
+                            visitor, display_name, avatar_url = await self._get_or_register_visitor(p, rec)
+                            if visitor is None:
+                                raise RuntimeError("WorkTool group visitor registration failed")
+                            await self._tgo_api_client.bind_reply_monitor_owner_chat(
+                                platform_api_key=p.api_key,
+                                message_id=str(rec.message_id),
+                                visitor_id=str(visitor.id),
+                            )
+                            await self._sync_inbound_to_wukongim(p, rec, visitor)
+                        await self._finalize_success(db, rec, None)
+                        continue
+
                     # Build mapped message
                     mapped_raw: dict[str, Any] = self._build_mapped_message(p, rec)
 

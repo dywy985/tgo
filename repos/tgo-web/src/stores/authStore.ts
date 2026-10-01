@@ -35,6 +35,7 @@ interface AuthState {
   logout: () => Promise<void>;
   clearError: () => void;
   setLoading: (loading: boolean) => void;
+  setAccessToken: (token: string) => void;
 }
 
 /**
@@ -193,7 +194,7 @@ export const useAuthStore = create<AuthState>()(
 
           // 3. Clear API token
           console.log('🔐 Auth Store: Clearing API token');
-          authAPI.logout();
+          await authAPI.logout();
 
           // 4. Clear auth state
           set({
@@ -256,6 +257,12 @@ export const useAuthStore = create<AuthState>()(
       // Set loading action
       setLoading: (loading: boolean) => {
         set({ isLoading: loading });
+      },
+
+      // Keep persisted auth state and WebSocket credentials in sync after a
+      // silent HTTP access-token refresh.
+      setAccessToken: (token: string) => {
+        set({ token });
       }
     }),
     {

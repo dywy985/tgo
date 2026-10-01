@@ -49,6 +49,8 @@ class _PlatformDB:
 async def test_chat_completion_prefers_platform_agent_id(monkeypatch) -> None:
     """Visitor chat should forward the platform-level agent override."""
 
+    monkeypatch.setattr(chat_endpoints.settings, "AI_REPLY_FROZEN", False)
+
     platform_agent_id = uuid4()
     project_id = uuid4()
     assigned_staff_id = uuid4()
@@ -127,6 +129,8 @@ async def test_chat_completion_omits_agent_id_without_platform_override(
 ) -> None:
     """Visitor chat should defer to the project default agent when no override exists."""
 
+    monkeypatch.setattr(chat_endpoints.settings, "AI_REPLY_FROZEN", False)
+
     project_id = uuid4()
     assigned_staff_id = uuid4()
     visitor = SimpleNamespace(
@@ -196,6 +200,31 @@ async def test_chat_completion_omits_agent_id_without_platform_override(
 
     assert result["message"] == "ok"
     assert "agent_id" not in handle_ai_mock.await_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_freeze_stops_before_visitor_and_ai(monkeypatch) -> None:
+    platform = SimpleNamespace(agent_id=None, ai_mode="auto")
+    project = SimpleNamespace(id=uuid4(), api_key="ak_project")
+    get_visitor = AsyncMock()
+    ai_reply = AsyncMock()
+    monkeypatch.setattr(chat_endpoints.settings, "AI_REPLY_FROZEN", True)
+    monkeypatch.setattr(
+        chat_endpoints.chat_service,
+        "validate_platform_and_project",
+        lambda _api_key, _db: (platform, project),
+    )
+    monkeypatch.setattr(chat_endpoints, "get_or_create_visitor", get_visitor)
+    monkeypatch.setattr(chat_endpoints.chat_service, "handle_ai_response_non_stream", ai_reply)
+
+    result = await chat_endpoints.chat_completion(
+        ChatCompletionRequest(api_key="pk_test", message="hello", from_uid="visitor", stream=False),
+        db=_NoOpDB(),
+    )
+
+    assert result["event_type"] == "ai_disabled"
+    get_visitor.assert_not_awaited()
+    ai_reply.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -1,7 +1,7 @@
 """企微通道调试端点 (v2.0).
 
 供 tgo-web 设置页"企微调试"面板使用:
-  GET  /debug/wecom/sessions            群聊会话列表 (读 pt_wecom_inbox 按 from_uid 分组)
+  GET  /debug/wecom/sessions            群聊会话列表 (按项目、平台和精确群名分组)
   GET  /debug/wecom/messages?conv=&n=   某会话消息记录
   POST /debug/wecom/send/worktool       WorkTool 通道发送 (代理 bridge 网关 8790)
   POST /debug/wecom/send/aibot          aibot 通道发送 (代理 bridge 发送服务 8791)
@@ -11,20 +11,21 @@ bridge 地址: settings.wecom_debug_bridge_url (env WECOM_DEBUG_BRIDGE_URL, 默�
 """
 from __future__ import annotations
 
+import json
 import os
 from typing import Any
+from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import text
 from sqlalchemy.orm import Session
-import json
 
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.logging import get_logger
 from app.core.security import get_current_active_user
-from app.models import Staff
+from app.models import ReplyMonitorMedia, Staff
 
 logger = get_logger("endpoints.debug_wecom")
 router = APIRouter()
@@ -34,27 +35,92 @@ WORKTOOL_GATEWAY = os.environ.get("WECOM_DEBUG_WORKTOOL_URL", BRIDGE_HOST + ":87
 AIBOT_SENDER = os.environ.get("WECOM_DEBUG_AIBOT_URL", BRIDGE_HOST + ":8791")
 
 
+def _require_debug_admin(user: Staff) -> Staff:
+    if str(getattr(user, "role", "")) != "admin":
+        raise HTTPException(status_code=403, detail="仅管理员可清理调试聊天记录")
+    return user
+
+
+def _project_inbox_where() -> str:
+    return "platform_id IN (SELECT id FROM pt_platforms WHERE project_id=:project_id)"
+
+
+def _make_conversation_key(platform_id: UUID | str, conversation_ref: str) -> str:
+    """Build the stable debug-session key for one platform and exact group name."""
+    return f"{platform_id}:{conversation_ref}"
+
+
+def _parse_conversation_key(value: str) -> tuple[UUID, str] | None:
+    """Parse a canonical key while leaving legacy from_user values untouched."""
+    platform_part, separator, conversation_ref = value.partition(":")
+    if not separator or not conversation_ref:
+        return None
+    try:
+        platform_id = UUID(platform_part)
+    except (TypeError, ValueError):
+        return None
+    return platform_id, conversation_ref
+
+
+def _debug_media_items(media_rows: list[Any]) -> dict[str, list[dict[str, Any]]]:
+    items: dict[str, list[dict[str, Any]]] = {}
+    for media in media_rows:
+        items.setdefault(str(media.message_id), []).append({
+            "id": str(media.id),
+            "content_type": media.content_type,
+            "file_size": media.file_size,
+            "width": media.width,
+            "height": media.height,
+            "status": media.status,
+            "capture_source": getattr(media, "capture_source", "cache"),
+            "url": f"/v1/reply-monitor/media/{media.id}",
+        })
+    return items
+
+
 @router.get("/wecom/sessions")
 async def wecom_sessions(
     db: Session = Depends(get_db),
     current_user: Staff = Depends(get_current_active_user),
 ) -> dict:
-    """群聊会话列表: from_uid + conv_name + 消息数 + 最后消息。"""
+    """群聊会话列表: 同一项目和平台内按精确群名归并。"""
     rows = db.execute(
         text("""
-            SELECT from_user,
-                   COALESCE(NULLIF(raw_payload->>'conv_name', ''), from_user) AS conv_name,
+            WITH scoped AS (
+                SELECT platform_id,
+                       COALESCE(NULLIF(BTRIM(raw_payload->>'conv_name'), ''), from_user) AS conversation_ref,
+                       fetched_at
+                FROM pt_wecom_inbox
+                WHERE source_type IN ('wecom_reader', 'worktool')
+                  AND platform_id IN (SELECT id FROM pt_platforms WHERE project_id=:project_id)
+                  AND from_user <> ''
+            )
+            SELECT platform_id,
+                   conversation_ref,
+                   conversation_ref AS conv_name,
                    COUNT(*) AS msg_count,
                    MAX(fetched_at) AS last_at
-            FROM pt_wecom_inbox
-            WHERE source_type IN ('wecom_reader', 'worktool')
-              AND from_user <> ''
-            GROUP BY from_user, conv_name
+            FROM scoped
+            GROUP BY platform_id, conversation_ref
             ORDER BY last_at DESC
             LIMIT 100
-        """)
+        """),
+        {"project_id": str(current_user.project_id)},
     ).mappings().all()
-    return {"count": len(rows), "sessions": [dict(r) for r in rows]}
+    sessions = []
+    for row in rows:
+        item = dict(row)
+        conversation_key = _make_conversation_key(
+            item.pop("platform_id"), item.pop("conversation_ref")
+        )
+        # Keep from_user as a compatibility alias during rolling deployment.
+        item = {
+            "conversation_key": conversation_key,
+            "from_user": conversation_key,
+            **item,
+        }
+        sessions.append(item)
+    return {"count": len(sessions), "sessions": sessions}
 
 
 @router.get("/wecom/messages")
@@ -65,12 +131,32 @@ async def wecom_messages(
     current_user: Staff = Depends(get_current_active_user),
 ) -> dict:
     """某会话消息记录 (按时间倒序取最近 limit 条, 返回正序)。"""
-    if not conv or len(conv) > 128:
+    if not conv or len(conv) > 512:
         raise HTTPException(status_code=400, detail="conv 参数无效")
     limit = min(max(limit, 1), 1000)
+    canonical_key = _parse_conversation_key(conv)
+    if canonical_key:
+        platform_id, conversation_ref = canonical_key
+        conversation_filter = """
+            platform_id = :platform_id
+            AND COALESCE(NULLIF(BTRIM(raw_payload->>'conv_name'), ''), from_user) = :conversation_ref
+        """
+        query_params = {
+            "platform_id": str(platform_id),
+            "conversation_ref": conversation_ref,
+            "limit": limit,
+            "project_id": str(current_user.project_id),
+        }
+    else:
+        conversation_filter = "from_user = :conv"
+        query_params = {
+            "conv": conv,
+            "limit": limit,
+            "project_id": str(current_user.project_id),
+        }
     rows = db.execute(
-        text("""
-            SELECT id, from_user, content,
+        text(f"""
+            SELECT id, message_id, msg_type, from_user, content,
                    raw_payload->>'sender_name' AS sender_name,
                    source_type,
                    (raw_payload->>'is_question')::boolean AS is_question,
@@ -78,14 +164,51 @@ async def wecom_messages(
                    raw_payload->>'conv_name' AS conv_name,
                    fetched_at, ai_reply
             FROM pt_wecom_inbox
-            WHERE from_user = :conv
+            WHERE {conversation_filter}
+              AND platform_id IN (SELECT id FROM pt_platforms WHERE project_id=:project_id)
             ORDER BY fetched_at DESC
             LIMIT :limit
         """),
-        {"conv": conv, "limit": limit},
+        query_params,
     ).mappings().all()
     msgs = [dict(r) for r in reversed(rows)]
+    message_ids = [str(message["message_id"]) for message in msgs if message.get("message_id")]
+    media_rows = []
+    if message_ids:
+        media_rows = db.query(ReplyMonitorMedia).filter(
+            ReplyMonitorMedia.project_id == current_user.project_id,
+            ReplyMonitorMedia.message_id.in_(message_ids),
+        ).order_by(ReplyMonitorMedia.created_at.asc()).all()
+    media_by_message = _debug_media_items(media_rows)
+    for message in msgs:
+        media = media_by_message.get(str(message.get("message_id")), [])
+        message["media"] = media
+        if media:
+            message["media_status"] = "ready" if any(item["status"] == "ready" for item in media) else media[0]["status"]
+        elif str(message.get("msg_type") or "").lower() == "image":
+            message["media_status"] = "missing"
+        else:
+            message["media_status"] = "none"
     return {"count": len(msgs), "messages": msgs}
+
+
+@router.get("/wecom/history-cleanup/preview")
+def wecom_history_cleanup_preview(
+    db: Session = Depends(get_db),
+    current_user: Staff = Depends(get_current_active_user),
+) -> dict:
+    _require_debug_admin(current_user)
+    raise HTTPException(status_code=410, detail="无截止时间的调试记录清空已停用，请使用 WorkTool 平台的截止时间历史数据清理")
+
+
+@router.post("/wecom/history-cleanup")
+async def wecom_history_cleanup(
+    payload: dict[str, Any],
+    db: Session = Depends(get_db),
+    current_user: Staff = Depends(get_current_active_user),
+) -> dict:
+    _require_debug_admin(current_user)
+    raise HTTPException(status_code=410, detail="无截止时间的调试记录清空已停用，请使用 WorkTool 平台的截止时间历史数据清理")
 
 
 DEFAULT_TRIGGER = {
@@ -123,6 +246,7 @@ async def _aibot_http(method: str, path: str, payload: dict | None = None):
 async def wecom_aibot_config_get(
     current_user: Staff = Depends(get_current_active_user),
 ) -> dict:
+    raise HTTPException(status_code=410, detail="调试配置接口已停用，请使用平台连接配置")
     data, code = await _aibot_http("GET", "/api/config")
     if code >= 400:
         raise HTTPException(status_code=code, detail=data.get("error") or data)
@@ -134,6 +258,7 @@ async def wecom_aibot_config_put(
     payload: dict[str, Any],
     current_user: Staff = Depends(get_current_active_user),
 ) -> dict:
+    raise HTTPException(status_code=410, detail="调试配置接口已停用，请使用平台连接配置")
     data, code = await _aibot_http("POST", "/api/config", payload)
     if code >= 400:
         raise HTTPException(status_code=code, detail=data.get("error") or data)
@@ -147,6 +272,7 @@ async def wecom_worktool_config_get(
     db: Session = Depends(get_db),
     current_user: Staff = Depends(get_current_active_user),
 ) -> dict:
+    raise HTTPException(status_code=410, detail="调试配置接口已停用，请使用平台连接配置")
     row = db.execute(
         text("SELECT config FROM pt_platforms WHERE type = 'worktool' AND is_active = true ORDER BY created_at LIMIT 1")
     ).mappings().first()
@@ -163,6 +289,7 @@ async def wecom_worktool_config_put(
     db: Session = Depends(get_db),
     current_user: Staff = Depends(get_current_active_user),
 ) -> dict:
+    raise HTTPException(status_code=410, detail="调试配置接口已停用，请使用平台连接配置")
     wt = payload.get("worktool", payload)
     robot_id = str(wt.get("robot_id") or "").strip()
     gateway_url = str(wt.get("gateway_url") or "").strip()

@@ -120,6 +120,7 @@ from app.schemas.rag import (
 )
 from app.schemas.ticket import (
     TicketAssign,
+    TicketBulkArchive,
     TicketCommentCreate,
     TicketCommentResponse,
     TicketCreate,
@@ -465,6 +466,7 @@ __all__ = [
     "TicketUpdate",
     "TicketStatusChange",
     "TicketAssign",
+    "TicketBulkArchive",
     "TicketListParams",
     "TicketResponse",
     "TicketListResponse",

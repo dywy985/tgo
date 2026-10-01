@@ -1,6 +1,7 @@
 from __future__ import annotations
 import httpx
 from typing import AsyncIterator
+from urllib.parse import quote
 
 from app.domain.entities import ChatCompletionRequest
 from app.domain.ports import TgoApiClient
@@ -28,6 +29,45 @@ class HttpxTgoApiClient(TgoApiClient):
         )
         response.raise_for_status()
         return str(response.json().get("url") or "")
+
+    async def record_reply_monitor_event(self, *, platform_api_key: str, payload: dict) -> dict:
+        response = await self._client.post(
+            "/v1/reply-monitor/events",
+            headers={"X-Platform-API-Key": platform_api_key},
+            json=payload,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def bind_reply_monitor_owner_chat(
+        self, *, platform_api_key: str, message_id: str, visitor_id: str
+    ) -> dict:
+        response = await self._client.post(
+            f"/v1/reply-monitor/events/{quote(message_id, safe='')}/owner-chat",
+            headers={"X-Platform-API-Key": platform_api_key},
+            json={"visitor_id": visitor_id},
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def record_reply_monitor_media(
+        self,
+        *,
+        platform_api_key: str,
+        message_id: str,
+        filename: str,
+        content_type: str,
+        content: bytes,
+        capture_source: str = "cache",
+    ) -> dict:
+        response = await self._client.post(
+            f"/v1/reply-monitor/events/{quote(message_id, safe='')}/media",
+            headers={"X-Platform-API-Key": platform_api_key},
+            files={"file": (filename, content, content_type)},
+            data={"capture_source": capture_source},
+        )
+        response.raise_for_status()
+        return response.json()
 
     async def aclose(self) -> None:
         await self._client.aclose()

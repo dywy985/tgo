@@ -2,27 +2,27 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import Icon from '@/components/ui/Icon';
 import TicketDynamicForm, { type DynamicFormValues } from '@/components/tickets/TicketDynamicForm';
+import { useAuthStore } from '@/stores/authStore';
 import {
   ticketsApiService,
   type Ticket,
   type TicketComment,
   type TicketHistory,
   type TicketFormField,
+  type TicketStatus,
+  type ReplyMonitorTicketContext,
   TICKET_PRIORITY_COLORS,
   TICKET_PRIORITY_LABELS,
   TICKET_STATUS_COLORS,
   TICKET_STATUS_LABELS,
 } from '@/services/ticketsApi';
+import { replyMonitorApi } from '@/services/replyMonitorApi';
 
 // 详情页可执行的常用流转
-const ACTION_TRANSITIONS: Array<{ status: string; label: string; color: string; icon: string }> = [
-  { status: 'processing', label: '开始处理', color: 'bg-purple-600 hover:bg-purple-700', icon: 'Play' },
-  { status: 'pending_human', label: '转人工', color: 'bg-orange-600 hover:bg-orange-700', icon: 'UserPlus' },
-  { status: 'resolved', label: '标记已解决', color: 'bg-green-600 hover:bg-green-700', icon: 'CheckCircle2' },
-  { status: 'closed', label: '归档', color: 'bg-gray-600 hover:bg-gray-700', icon: 'Archive' },
-  { status: 'open', label: '重新打开', color: 'bg-blue-600 hover:bg-blue-700', icon: 'RotateCcw' },
-  { status: 'rejected', label: '拒绝/无需处理', color: 'bg-red-600 hover:bg-red-700', icon: 'XCircle' },
-];
+const ACTION_TRANSITIONS = {
+  replied: { status: 'archived', label: '归档', color: 'bg-gray-600 hover:bg-gray-700', icon: 'Archive' },
+  archived: { status: 'replied', label: '恢复为已回复', color: 'bg-green-600 hover:bg-green-700', icon: 'RotateCcw' },
+} as const;
 
 const BUILTIN_KEYS = ['title', 'description', 'category', 'priority', 'assignee_id', 'visitor_id', 'group_key'];
 
@@ -66,10 +66,12 @@ function splitValues(values: DynamicFormValues): {
 const TicketDetailPage: React.FC = () => {
   const navigate = useNavigate();
   const { id } = useParams<{ id: string }>();
+  const isAdmin = useAuthStore((state) => state.user?.role === 'admin');
 
   const [ticket, setTicket] = useState<Ticket | null>(null);
   const [comments, setComments] = useState<TicketComment[]>([]);
   const [history, setHistory] = useState<TicketHistory[]>([]);
+  const [monitorContext, setMonitorContext] = useState<ReplyMonitorTicketContext | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [note, setNote] = useState('');
@@ -77,6 +79,8 @@ const TicketDetailPage: React.FC = () => {
   const [commentInternal, setCommentInternal] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [attachmentUrls, setAttachmentUrls] = useState<Record<string, string>>({});
+  const [monitorMediaUrls, setMonitorMediaUrls] = useState<Record<string, string>>({});
+  const [wecomDispatching, setWecomDispatching] = useState(false);
 
   // 编辑模式
   const [editing, setEditing] = useState(false);
@@ -98,6 +102,11 @@ const TicketDetailPage: React.FC = () => {
       setTicket(tk);
       setComments(cmts);
       setHistory(hist);
+      if (tk.source === 'reply_monitor') {
+        setMonitorContext(await ticketsApiService.getMonitorContext(id));
+      } else {
+        setMonitorContext(null);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载失败');
     } finally {
@@ -134,6 +143,31 @@ const TicketDetailPage: React.FC = () => {
     };
   }, [ticket?.id, ticket?.attachments]);
 
+  useEffect(() => {
+    let active = true;
+    const createdUrls: string[] = [];
+    const media = (monitorContext?.timeline || []).flatMap((event) => event.media || []);
+    const loadMonitorMedia = async () => {
+      const entries = await Promise.all(media.map(async (item) => {
+        if (item.status !== 'ready') return [item.id, ''] as const;
+        try {
+          const blob = await ticketsApiService.getAttachmentBlob(item.url);
+          const objectUrl = URL.createObjectURL(blob);
+          createdUrls.push(objectUrl);
+          return [item.id, objectUrl] as const;
+        } catch {
+          return [item.id, ''] as const;
+        }
+      }));
+      if (active) setMonitorMediaUrls(Object.fromEntries(entries));
+    };
+    loadMonitorMedia();
+    return () => {
+      active = false;
+      createdUrls.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, [monitorContext]);
+
   // 支持列表页 ?edit=1 进入后自动打开编辑模式
   const [searchParams] = useSearchParams();
   const autoEditTriggered = useRef(false);
@@ -161,6 +195,27 @@ const TicketDetailPage: React.FC = () => {
     setFormValues(flattenTicket(ticket));
     setSaveMsg('');
     setEditing(true);
+  };
+
+  const openInWeCom = async () => {
+    if (!monitorContext?.can_dispatch_to_wecom) return;
+    setWecomDispatching(true);
+    setSaveMsg('');
+    try {
+      const result = await replyMonitorApi.dispatchToWeCom(
+        monitorContext.batch.platform_id,
+        monitorContext.batch.conversation_key,
+      );
+      if (result.jump_url) {
+        window.location.assign(result.jump_url);
+      } else if (result.dispatched) {
+        setSaveMsg('精准跳转卡片已发送到你的企业微信私聊');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '企业微信跳转暂不可用');
+    } finally {
+      setWecomDispatching(false);
+    }
   };
 
   const cancelEdit = () => {
@@ -216,6 +271,19 @@ const TicketDetailPage: React.FC = () => {
     } catch (err) {
       setError(err instanceof Error ? err.message : '操作失败');
     } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!ticket || !window.confirm(`确定删除工单 ${ticket.number} 吗？删除后将返回工单列表。`)) return;
+    setActionLoading(true);
+    setError('');
+    try {
+      await ticketsApiService.deleteTicket(ticket.id);
+      navigate('/tickets');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '删除失败');
       setActionLoading(false);
     }
   };
@@ -277,7 +345,7 @@ const TicketDetailPage: React.FC = () => {
           </div>
         </div>
         <div className="flex items-center gap-4">
-          {ticket.sla_due_at && ticket.status !== 'closed' && (
+          {ticket.sla_due_at && ticket.status === 'pending_reply' && (
             <div className="text-right text-xs">
               <p className="text-gray-500 dark:text-gray-400">SLA 截止</p>
               <p className={`font-semibold ${new Date(ticket.sla_due_at) < new Date() ? 'text-red-500' : 'text-gray-700 dark:text-gray-300'}`}>
@@ -302,12 +370,23 @@ const TicketDetailPage: React.FC = () => {
               </button>
             </>
           ) : (
-            <button
-              onClick={startEdit}
-              className="px-3 py-2 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg"
-            >
-              编辑
-            </button>
+            <>
+              <button
+                onClick={startEdit}
+                className="px-3 py-2 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg"
+              >
+                编辑
+              </button>
+              {isAdmin && (
+                <button
+                  onClick={handleDelete}
+                  disabled={actionLoading}
+                  className="px-3 py-2 text-xs font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg disabled:opacity-50"
+                >
+                  删除
+                </button>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -339,7 +418,12 @@ const TicketDetailPage: React.FC = () => {
             />
           ) : (
             <>
-              <p className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap">{ticket.description}</p>
+              {!monitorContext && <p className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap">{ticket.description}</p>}
+              {monitorContext && (
+                <p className="text-sm text-gray-600 dark:text-gray-300">
+                  问题内容已按原始消息结构展示在下方时间线中，图片不会再用占位符代替。
+                </p>
+              )}
               <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
                 <div>
                   <p className="text-gray-400">分类</p>
@@ -352,21 +436,13 @@ const TicketDetailPage: React.FC = () => {
                 <div>
                   <p className="text-gray-400">来源</p>
                   <p className="text-gray-700 dark:text-gray-300 font-medium">
-                    {ticket.source === 'manual_service' ? '转人工' : ticket.source === 'staff_manual' ? '手动创建' : ticket.source === 'public_form' ? '客户表单' : 'AI 判定'}
+                    未回复监控
                   </p>
                 </div>
                 <div>
                   <p className="text-gray-400">访客</p>
                   <p className="text-gray-700 dark:text-gray-300 font-medium">{ticket.visitor_name || '—'}</p>
                 </div>
-                {ticket.resolve_type && (
-                  <div>
-                    <p className="text-gray-400">解决方式</p>
-                    <p className="text-gray-700 dark:text-gray-300 font-medium">
-                      {ticket.resolve_type === 'ai_resolved' ? 'AI 解决' : ticket.resolve_type === 'human_resolved' ? '人工解决' : ticket.resolve_type}
-                    </p>
-                  </div>
-                )}
                 {ticket.contact_name && (
                   <div>
                     <p className="text-gray-400">联系人</p>
@@ -436,11 +512,89 @@ const TicketDetailPage: React.FC = () => {
           )}
         </div>
 
+        {monitorContext && (
+          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm p-5">
+            <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-200">客户消息时间线</h2>
+                <p className="mt-1 text-xs text-gray-400">
+                  {monitorContext.batch.conversation_name || monitorContext.batch.conversation_key}
+                  {' · '}{monitorContext.batch.conversation_type === 'group' ? '群聊' : '私聊'}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                {monitorContext.can_dispatch_to_wecom && (
+                  <button type="button" onClick={openInWeCom} disabled={wecomDispatching}
+                    className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
+                    {wecomDispatching ? '正在处理…' : '前往企业微信'}
+                  </button>
+                )}
+                <span className="rounded-full bg-orange-50 px-2.5 py-1 text-xs font-medium text-orange-600 dark:bg-orange-900/30 dark:text-orange-300">
+                  已提醒 {monitorContext.batch.reminder_count} 次
+                </span>
+              </div>
+            </div>
+            <div className="space-y-3">
+              {monitorContext.timeline.map((event) => (
+                <div key={event.id} className="flex gap-3">
+                  <span className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${event.sender_kind === 'staff' ? 'bg-emerald-500' : event.sender_kind === 'customer' ? 'bg-blue-500' : 'bg-gray-400'}`} />
+                  <div className="min-w-0 flex-1 rounded-lg bg-gray-50 px-3 py-2 dark:bg-gray-700/40">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-gray-400">
+                      <span>{event.sender_name || (event.sender_kind === 'staff' ? '客服' : '客户')} · {event.message_type}</span>
+                      <span>{new Date(event.occurred_at).toLocaleString('zh-CN', { hour12: false })}</span>
+                    </div>
+                    {event.message_type !== 'image' && (
+                      <p className="mt-1 whitespace-pre-wrap break-words text-sm text-gray-700 dark:text-gray-200">{event.content_summary || `[${event.message_type}]`}</p>
+                    )}
+                    {event.media?.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {event.media.map((item) => monitorMediaUrls[item.id] ? (
+                          <a key={item.id} href={monitorMediaUrls[item.id]} target="_blank" rel="noreferrer" title={`${item.width}×${item.height} · ${Math.ceil(item.file_size / 1024)}KB`}>
+                            <img
+                              src={monitorMediaUrls[item.id]}
+                              alt="客户消息图片"
+                              className="h-24 w-24 rounded-lg border border-gray-200 object-cover dark:border-gray-600"
+                            />
+                          </a>
+                        ) : (
+                          <div key={item.id} className="flex h-24 w-24 items-center justify-center rounded-lg bg-gray-100 text-xs text-gray-400 dark:bg-gray-700">
+                            {item.status === 'deleted' ? '已按策略删除' : '图片加载失败'}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {event.message_type === 'image' && event.media_status === 'recovering' && (
+                      <div className="mt-2 flex h-24 w-36 items-center justify-center rounded-lg bg-amber-50 text-xs text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">历史图片恢复中</div>
+                    )}
+                    {event.message_type === 'image' && event.media_status === 'missing' && (
+                      <div className="mt-2 flex h-24 w-36 items-center justify-center rounded-lg bg-gray-100 text-xs text-gray-500 dark:bg-gray-700 dark:text-gray-300">历史图片未留存</div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* 状态操作 */}
         <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm p-5">
           <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-3">状态操作</h2>
           <div className="flex flex-wrap gap-2 items-center">
-            {ACTION_TRANSITIONS.map((action) => (
+            {isAdmin ? (
+              <select
+                aria-label="管理员设置工单状态"
+                value={ticket.status}
+                disabled={actionLoading}
+                onChange={(e) => handleAction(e.target.value as TicketStatus)}
+                className="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 disabled:opacity-50"
+              >
+                <option value="pending_reply">待回复</option>
+                <option value="replied">已回复</option>
+                <option value="archived">已归档</option>
+              </select>
+            ) : ticket.status === 'pending_reply' ? (
+              <p className="text-xs text-gray-500 dark:text-gray-400">客服真实回复后，系统会自动标记为“已回复”。</p>
+            ) : ([ACTION_TRANSITIONS[ticket.status]]).map((action) => (
               <button
                 key={action.status}
                 disabled={actionLoading}
@@ -451,12 +605,12 @@ const TicketDetailPage: React.FC = () => {
                 {action.label}
               </button>
             ))}
-            <input
+            {(isAdmin || ticket.status !== 'pending_reply') && <input
               value={note}
               onChange={(e) => setNote(e.target.value)}
               placeholder="流转备注（可选）"
               className="flex-1 min-w-40 px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200"
-            />
+            />}
           </div>
         </div>
 

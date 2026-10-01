@@ -66,7 +66,7 @@ def create_access_token(
             minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
         )
 
-    to_encode = {"exp": expire, "sub": str(subject)}
+    to_encode = {"exp": expire, "sub": str(subject), "token_type": "access"}
 
     # Include project_id in token claims if provided
     if project_id:
@@ -80,6 +80,34 @@ def create_access_token(
     return encoded_jwt
 
 
+def create_refresh_token(
+    subject: Union[str, Any],
+    project_id: Optional[Union[str, UUID]] = None,
+    role: Optional[str] = None,
+    expires_delta: Optional[timedelta] = None,
+) -> str:
+    """Create a JWT that can only be used to renew a staff session."""
+    expire = datetime.utcnow() + (
+        expires_delta
+        if expires_delta is not None
+        else timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    )
+    to_encode = {
+        "exp": expire,
+        "sub": str(subject),
+        "token_type": "refresh",
+    }
+    if project_id:
+        to_encode["project_id"] = str(project_id)
+    if role:
+        to_encode["role"] = role
+    return jwt.encode(
+        to_encode,
+        settings.SECRET_KEY,
+        algorithm=settings.ALGORITHM,
+    )
+
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against its hash."""
     return pwd_context.verify(plain_password, hashed_password)
@@ -91,15 +119,36 @@ def get_password_hash(password: str) -> str:
 
 
 def verify_token(token: str) -> Optional[Dict[str, Any]]:
-    """Verify JWT token and return payload."""
+    """Verify an access token and return its payload.
+
+    Tokens issued before token purposes were introduced do not contain a
+    ``token_type`` claim. They remain valid until their original expiry so a
+    deployment does not immediately sign out every active operator.
+    """
     try:
         payload = jwt.decode(
             token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
         )
+        if payload.get("token_type", "access") != "access":
+            return None
         return payload
     except JWTError as e:
         # Downgrade to debug to avoid noisy logs on unauthenticated endpoints
         logger.debug(f"Token verification failed: {e}")
+        return None
+
+
+def verify_refresh_token(token: str) -> Optional[Dict[str, Any]]:
+    """Verify a refresh token without accepting legacy or access tokens."""
+    try:
+        payload = jwt.decode(
+            token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+        )
+        if payload.get("token_type") != "refresh":
+            return None
+        return payload
+    except JWTError as e:
+        logger.debug(f"Refresh token verification failed: {e}")
         return None
 
 
@@ -440,4 +489,3 @@ def require_admin():
         return current_user
     
     return admin_dependency
-

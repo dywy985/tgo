@@ -25,6 +25,7 @@ import {
   Clock,
   MessageSquare,
   Brain,
+  Upload,
 } from 'lucide-react';
 import { staffApi, StaffRole, StaffStatus, StaffUpdateRequest, VisitorAssignmentRuleResponse } from '@/services/staffApi';
 import { StaffResponse, StaffCreateRequest } from '@/services/api';
@@ -552,6 +553,19 @@ const StaffSettings: React.FC = () => {
   const [routesLoading, setRoutesLoading] = useState(false);
   const [routeSaving, setRouteSaving] = useState(false);
   const [editingRouteId, setEditingRouteId] = useState<string | null>(null);
+  const [routeImportResult, setRouteImportResult] = useState<string>('');
+
+  const handleRouteImport = async (file?: File) => {
+    if (!file) return;
+    try {
+      const result = await ticketsApiService.importRoutes(file);
+      const firstErrors = result.errors.slice(0, 3).map(e => `第${e.line}行：${e.error}`).join('；');
+      setRouteImportResult(`成功 ${result.success_count} 行，失败 ${result.error_count} 行${firstErrors ? `（${firstErrors}）` : ''}`);
+      fetchRoutes(); fetchGroupOptions();
+    } catch (err) {
+      setRouteImportResult(err instanceof Error ? err.message : '导入失败');
+    }
+  };
 
   const fetchRoutes = useCallback(async () => {
     setRoutesLoading(true);
@@ -965,6 +979,14 @@ const StaffSettings: React.FC = () => {
                   <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
                     转人工/工单按「特定客户 &gt; 群 &gt; 默认」匹配负责客服：命中且客服在线 → 直接分配；不在线 → 记录工单等待，其上线后提醒。
                   </p>
+                  <div className="mb-3 flex flex-wrap items-center gap-2">
+                    <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-blue-200 px-3 py-1.5 text-xs text-blue-700 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-300">
+                      <Upload className="h-4 w-4" />批量导入群主路由 CSV
+                      <input type="file" accept=".csv,text/csv" className="hidden" onChange={(e) => { void handleRouteImport(e.target.files?.[0]); e.currentTarget.value=''; }} />
+                    </label>
+                    <span className="text-[11px] text-gray-500">列：platform_id, group_key, group_name, staff_id或wecom_userid, priority</span>
+                    {routeImportResult && <span className="w-full text-xs text-gray-600 dark:text-gray-300">{routeImportResult}</span>}
+                  </div>
 
                   {/* 添加路由 */}
                   <div className="grid grid-cols-1 md:grid-cols-12 gap-2 mb-3">
@@ -1620,4 +1642,3 @@ const StaffSettings: React.FC = () => {
 };
 
 export default StaffSettings;
-

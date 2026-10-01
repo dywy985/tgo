@@ -22,4 +22,4 @@ class SystemInfoResponse(BaseSchema):
         None,
         description="Git commit hash for the running build, if available",
     )
-
+    ai_reply_frozen: bool = Field(False, description="Whether automatic AI/RAG replies are hard-disabled")

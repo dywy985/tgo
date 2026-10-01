@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import io
 import time
 from typing import List, Optional
@@ -17,10 +16,9 @@ from app.models import Platform, Project, TicketAttachment, TicketStatusHistory
 from app.services.public_ticket_form import render_public_ticket_form
 from app.services.public_ticket_submission import (
     MAX_IMAGE_BYTES,
-    detect_image_type,
     normalize_public_ticket_fields,
-    validate_ticket_image,
 )
+from app.services.reply_monitor_media_service import sanitize_image
 from app.services.public_ticket_token import (
     InvalidPublicTicketToken,
     decode_public_ticket_token,
@@ -53,6 +51,7 @@ async def create_public_ticket_link(
     db: Session = Depends(get_db),
 ) -> dict:
     """Issue a short-lived customer form URL for a trusted platform adapter."""
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail="公开工单入口已停用")
     platform = (
         db.query(Platform)
         .filter(Platform.api_key == x_platform_api_key, Platform.deleted_at.is_(None))
@@ -75,6 +74,7 @@ async def create_public_ticket_link(
 
 @router.get("/{token}", response_class=HTMLResponse)
 async def public_ticket_form(token: str, db: Session = Depends(get_db)) -> HTMLResponse:
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail="公开工单入口已停用")
     context = _decode_context(token)
     try:
         project_id = UUID(context["project_id"])
@@ -95,6 +95,7 @@ async def submit_public_ticket(
     images: Optional[List[UploadFile]] = File(None),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail="公开工单入口已停用")
     context = _decode_context(token)
     try:
         project_id = UUID(context["project_id"])
@@ -119,11 +120,10 @@ async def submit_public_ticket(
     try:
         for uploaded in upload_files:
             content = await uploaded.read(MAX_IMAGE_BYTES + 1)
-            detected_type = detect_image_type(content)
-            safe_name = validate_ticket_image(uploaded.filename or "image", detected_type or "", len(content))
-            if detected_type != uploaded.content_type:
-                raise ValueError("图片内容与文件类型不匹配")
-            prepared.append((safe_name, detected_type, content))
+            image = sanitize_image(
+                content, uploaded.content_type or "", uploaded.filename or "image"
+            )
+            prepared.append(image)
     except ValueError as exc:
         return HTMLResponse(render_public_ticket_form(token, error=str(exc)), status_code=400)
 
@@ -145,19 +145,19 @@ async def submit_public_ticket(
         )
         db.flush()
 
-        for safe_name, content_type, content in prepared:
-            storage_path = f"tickets/{project_id}/{ticket.id}/{uuid4().hex}-{safe_name}"
-            await storage.upload(io.BytesIO(content), storage_path, content_type)
+        for image in prepared:
+            storage_path = f"tickets/{project_id}/{ticket.id}/{uuid4().hex}-{image.filename}"
+            await storage.upload(io.BytesIO(image.content), storage_path, image.content_type)
             stored_paths.append(storage_path)
             db.add(
                 TicketAttachment(
                     project_id=project_id,
                     ticket_id=ticket.id,
-                    original_name=safe_name,
+                    original_name=image.filename,
                     storage_path=storage_path,
-                    content_type=content_type,
-                    file_size=len(content),
-                    sha256=hashlib.sha256(content).hexdigest(),
+                    content_type=image.content_type,
+                    file_size=len(image.content),
+                    sha256=image.sha256,
                 )
             )
         db.add(

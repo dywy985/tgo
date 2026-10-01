@@ -238,6 +238,9 @@ async def process_message(
 
     Returns the final reply text if available (for non-streaming adapters), otherwise None.
     """
+    if settings.ai_reply_frozen:
+        logging.info("[DISPATCH] automatic replies frozen; monitor-only mode")
+        return None
     if not getattr(msg, "platform_api_key", None):
         raise RuntimeError("platform_api_key missing on NormalizedMessage")
     adapter: PlatformAdapter | None = None

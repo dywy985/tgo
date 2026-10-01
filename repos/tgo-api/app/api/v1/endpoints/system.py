@@ -35,5 +35,5 @@ async def get_system_info() -> SystemInfoResponse:
         python_version=python_version,
         build_time=build_time,
         git_commit=git_commit,
+        ai_reply_frozen=settings.AI_REPLY_FROZEN,
     )
-

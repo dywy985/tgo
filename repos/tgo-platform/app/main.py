@@ -2,8 +2,10 @@ from __future__ import annotations
 import asyncio
 import uuid
 import logging
+import hashlib
 from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from app.api.error_utils import register_exception_handlers
 
 from app.core.config import settings
@@ -28,6 +30,8 @@ from app.domain.services.listeners.feishu_listener import FeishuChannelListener
 from app.domain.services.listeners.dingtalk_listener import DingTalkChannelListener
 from app.domain.services.listeners.telegram_listener import TelegramChannelListener
 from app.domain.services.listeners.slack_listener import SlackChannelListener
+from app.domain.services.shared_http import shared_async_clients
+from app.core.rate_limit import CallbackRateLimiter
 
 
 
@@ -133,9 +137,12 @@ async def lifespan(app: FastAPI):
             await app.state.telegram_listener_task
         with suppress(asyncio.CancelledError):
             await app.state.slack_listener_task
+        await shared_async_clients.close_all()
         await app.state.tgo_api_client.aclose()
 
 app = FastAPI(lifespan=lifespan, docs_url="/v1/docs", redoc_url="/v1/redoc")
+_callback_rate_limiter = CallbackRateLimiter()
+security_logger = logging.getLogger("security.platform")
 
 # Register global exception handlers and request ID middleware
 register_exception_handlers(app)
@@ -144,7 +151,30 @@ register_exception_handlers(app)
 async def add_request_id(request: Request, call_next):
     rid = request.headers.get("x-request-id") or str(uuid.uuid4())
     request.state.request_id = rid
+    if request.url.path.startswith("/v1/platforms/callback/"):
+        client_ip = request.client.host if request.client else "unknown"
+        marker = hashlib.sha256(client_ip.encode("utf-8")).hexdigest()[:12]
+        is_media = request.url.path.endswith("/media")
+        limit = (
+            settings.media_rate_limit_per_minute
+            if is_media else settings.callback_rate_limit_per_minute
+        )
+        if not _callback_rate_limiter.allow(
+            f"{'media' if is_media else 'callback'}:{marker}", limit
+        ):
+            security_logger.warning(
+                "callback_rate_limit client=%s media=%s", marker, is_media
+            )
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Too many requests"},
+                headers={"Retry-After": "60", "x-request-id": rid},
+            )
     response = await call_next(request)
+    if request.url.path.startswith("/v1/platforms/callback/") and response.status_code in {401, 403, 404}:
+        security_logger.warning(
+            "callback_auth_failure request=%s status=%d", rid, response.status_code
+        )
     response.headers["x-request-id"] = rid
     return response
 

@@ -26,6 +26,7 @@ from langchain_community.document_loaders.parsers import BS4HTMLParser, PDFMiner
 from langchain_community.document_loaders.parsers.generic import MimeTypeBasedParser
 from langchain_community.document_loaders.parsers.txt import TextParser
 from langchain_community.document_loaders.generic import GenericLoader
+from langchain_core.documents import Document
 
 from ..logging_config import get_logger
 from .document_processing_errors import DocumentProcessingError, ProcessingStep
@@ -37,6 +38,23 @@ from .document_processing_types import (
 )
 
 logger = get_logger(__name__)
+
+
+class SpreadsheetDocumentLoader:
+    def __init__(self, file_path: str, content_type: str):
+        self.file_path = file_path
+        self.content_type = content_type
+
+    def load(self) -> List[Document]:
+        from ..spreadsheet_loader import extract_spreadsheet
+
+        return [
+            Document(
+                page_content=sheet.content,
+                metadata={**sheet.metadata, "content_type": self.content_type},
+            )
+            for sheet in extract_spreadsheet(self.file_path, self.content_type)
+        ]
 
 
 def get_document_loader(file_path: str, content_type: str, file_id: str) -> Union[GenericLoader, Any]:
@@ -67,6 +85,12 @@ def get_document_loader(file_path: str, content_type: str, file_id: str) -> Unio
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         ]:
             return _get_word_document_loader(file_path, content_type, file_id)
+
+        if content_type in [
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-excel",
+        ]:
+            return SpreadsheetDocumentLoader(file_path, content_type)
         
         # For other file types, use GenericLoader with appropriate parser
         file_dir = os.path.dirname(file_path)
@@ -271,6 +295,14 @@ def get_parser_info(content_type: str) -> ParserInfo:
         return ParserInfo(
             parser="MsWordParser",
             description="Microsoft Word document parser for .doc and .docx files"
+        )
+    elif content_type in [
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.ms-excel",
+    ]:
+        return ParserInfo(
+            parser="SpreadsheetDocumentLoader",
+            description="Excel loader preserving every worksheet, populated cell coordinate, value, and formula",
         )
     elif content_type in ["text/html", "application/xhtml+xml"]:
         return ParserInfo(

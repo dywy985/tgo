@@ -6,6 +6,7 @@ import httpx
 
 from app.domain.entities import StreamEvent
 from app.domain.services.adapters.base import BasePlatformAdapter
+from app.domain.services.shared_http import shared_async_clients
 
 
 class WorkToolAdapter(BasePlatformAdapter):
@@ -57,11 +58,18 @@ class WorkToolAdapter(BasePlatformAdapter):
             headers["X-API-Key"] = self.api_key
         payload = {"robot_id": self.robot_id, "title": self.chatid, "content": text[:20480]}
         try:
-            async with httpx.AsyncClient(timeout=self.http_timeout) as client:
-                resp = await client.post(f"{self.gateway_url}/api/send", json=payload, headers=headers)
-                resp.raise_for_status()
-                data = resp.json()
-                if data.get("status") != "queued":
-                    raise RuntimeError(f"网关返回异常: {data}")
+            pool_key = f"worktool:{self.http_timeout}"
+            client = shared_async_clients.get(
+                pool_key,
+                lambda: httpx.AsyncClient(
+                    timeout=self.http_timeout,
+                    limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+                ),
+            )
+            resp = await client.post(f"{self.gateway_url}/api/send", json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("status") != "queued":
+                raise RuntimeError(f"网关返回异常: {data}")
         except Exception as e:
             raise RuntimeError(f"WorkTool 网关调用失败: {e}") from e

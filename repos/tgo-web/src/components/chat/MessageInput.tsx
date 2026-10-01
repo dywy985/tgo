@@ -7,8 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { useChatStore, chatSelectors, useMessageStore } from '@/stores';
 import { useChannelStore } from '@/stores/channelStore';
 import { useAuthStore } from '@/stores/authStore';
-import type { ChannelVisitorExtra, Message } from '@/types';
-import { MessagePayloadType, PlatformType } from '@/types';
+import { MessagePayloadType, PlatformType, type ChannelVisitorExtra, type Message } from '@/types';
 import { DEFAULT_CHANNEL_TYPE } from '@/constants';
 import { visitorApiService } from '@/services/visitorApi';
 import { conversationsApi } from '@/services/conversationsApi';
@@ -59,6 +58,7 @@ interface MessageInputProps {
   onSendMessage?: (message: string) => void;
   isSending?: boolean;
   onAcceptVisitor?: () => void;
+  platformTypeHint?: PlatformType;
 }
 
 /**
@@ -68,6 +68,7 @@ const MessageInput: React.FC<MessageInputProps> = ({
   onSendMessage,
   isSending = false,
   onAcceptVisitor,
+  platformTypeHint,
 }) => {
   const { t } = useTranslation();
   const [message, setMessage] = useState<string>('');
@@ -238,9 +239,10 @@ const MessageInput: React.FC<MessageInputProps> = ({
   // 2. If ai_disabled is set, use its value (!ai_disabled -> ON)
   const aiDisabledRaw = visitorExtra?.ai_disabled;
   const aiMode = visitorExtra?.ai_settings?.ai_mode ?? 'auto';
-  const isAIEnabled = (aiDisabledRaw === null || aiDisabledRaw === undefined) 
+  const isAIReplyFrozen = String(import.meta.env.VITE_AI_REPLY_FROZEN ?? 'true').toLowerCase() !== 'false';
+  const isAIEnabled = !isAIReplyFrozen && ((aiDisabledRaw === null || aiDisabledRaw === undefined)
     ? (aiMode === 'auto') 
-    : !aiDisabledRaw;
+    : !aiDisabledRaw);
   
   // 获取分配坐席的频道信息（用于显示坐席名字）
   const assignedStaffChannelId = assignedStaffId ? `${assignedStaffId}-staff` : undefined;
@@ -251,7 +253,17 @@ const MessageInput: React.FC<MessageInputProps> = ({
   
   // agent 会话时不禁用手动输入;
   // 桥接平台 (worktool/wecom 等) 客服需要随时回复客户, 仅网站平台在 AI 托管时禁用手动输入
-  const platformType = visitorExtra?.platform_type;
+  const platformType = visitorExtra?.platform_type || platformTypeHint;
+  const resolvePlatformType = useCallback(async (): Promise<PlatformType> => {
+    if (platformType) return platformType;
+    if (channelType === 251 && channelId?.endsWith('-vtr')) {
+      const visitor = await visitorApiService.getVisitor(channelId.slice(0, -4));
+      if (Object.values(PlatformType).includes(visitor.platform_type as PlatformType)) {
+        return visitor.platform_type as PlatformType;
+      }
+    }
+    throw new Error('无法确认会话平台，消息未发送');
+  }, [platformType, channelType, channelId]);
   const isManualDisabled = isAIChat ? false : (isAIEnabled && platformType === PlatformType.WEBSITE);
   // 流消息进行中时不禁用输入框，但发送按钮会变成暂停按钮
   const { showToast, showError } = useToast();
@@ -494,6 +506,7 @@ const MessageInput: React.FC<MessageInputProps> = ({
 
 
   const handleChangeAI = useCallback(async (nextEnabled: boolean) => {
+    if (isAIReplyFrozen) return;
     if (!visitorId || !channelId || typeof channelType !== 'number') return;
     if (nextEnabled === isAIEnabled) return; // no change
     try {
@@ -528,7 +541,7 @@ const MessageInput: React.FC<MessageInputProps> = ({
     } finally {
       setIsTogglingAI(false);
     }
-  }, [visitorId, channelId, channelType, isAIEnabled, showToast]);
+  }, [visitorId, channelId, channelType, isAIEnabled, isAIReplyFrozen, showToast]);
 
   useEffect(() => {
     if (shouldMaintainFocus.current) {
@@ -803,8 +816,8 @@ const MessageInput: React.FC<MessageInputProps> = ({
         clientMsgNo: nowId,
         messageSeq: 0,
         fromUid: user?.id ? `${user.id}-staff` : 'staff',
-        channelId: channelId,
-        channelType: channelType,
+        channelId,
+        channelType,
         payloadType: MessagePayloadType.IMAGE,
         metadata: {
           isLocal: true,
@@ -848,7 +861,7 @@ const MessageInput: React.FC<MessageInputProps> = ({
         } as any;
 
         try {
-          if (visitorExtra?.platform_type && visitorExtra.platform_type !== PlatformType.WEBSITE) {
+          if ((await resolvePlatformType()) !== PlatformType.WEBSITE) {
             try {
               await chatMessagesApiService.staffSendPlatformMessage({
                 channel_id: channelId,
@@ -881,7 +894,7 @@ const MessageInput: React.FC<MessageInputProps> = ({
     // Clear previews after triggering sends
     setPastedItems([]);
     if (fileInputRef.current) fileInputRef.current.value = '';
-  }, [pastedItems, channelId, channelType, user?.id, addMessage, updateConversationLastMessage, moveConversationToTop, updateMessageByClientMsgNo, isConnected, sendWsMessage, showToast, showError, visitorExtra?.platform_type]);
+  }, [pastedItems, channelId, channelType, user?.id, addMessage, updateConversationLastMessage, moveConversationToTop, updateMessageByClientMsgNo, isConnected, sendWsMessage, showToast, showError, resolvePlatformType]);
 
   // Send selected files (each as a separate message)
   const sendSelectedFilesOnly = useCallback(async (): Promise<void> => {
@@ -909,8 +922,8 @@ const MessageInput: React.FC<MessageInputProps> = ({
         clientMsgNo: nowId,
         messageSeq: 0,
         fromUid: user?.id ? `${user.id}-staff` : 'staff',
-        channelId: channelId,
-        channelType: channelType,
+        channelId,
+        channelType,
         payloadType: MessagePayloadType.FILE,
         metadata: {
           isLocal: true,
@@ -955,7 +968,7 @@ const MessageInput: React.FC<MessageInputProps> = ({
         } as any;
 
         try {
-          if (visitorExtra?.platform_type && visitorExtra.platform_type !== PlatformType.WEBSITE) {
+          if ((await resolvePlatformType()) !== PlatformType.WEBSITE) {
             try {
               await chatMessagesApiService.staffSendPlatformMessage({
                 channel_id: channelId,
@@ -987,7 +1000,7 @@ const MessageInput: React.FC<MessageInputProps> = ({
 
     // Clear previews after triggering sends
     setSelectedFiles([]);
-  }, [selectedFiles, channelId, channelType, user?.id, addMessage, updateConversationLastMessage, moveConversationToTop, updateMessageByClientMsgNo, isConnected, sendWsMessage, showToast, showError, visitorExtra?.platform_type]);
+  }, [selectedFiles, channelId, channelType, user?.id, addMessage, updateConversationLastMessage, moveConversationToTop, updateMessageByClientMsgNo, isConnected, sendWsMessage, showToast, showError, resolvePlatformType]);
 
   // Send rich text message with file attachment (text + file)
   const sendRichTextWithFile = useCallback(async (): Promise<void> => {
@@ -1015,8 +1028,8 @@ const MessageInput: React.FC<MessageInputProps> = ({
       clientMsgNo: nowId,
       messageSeq: 0,
       fromUid: user?.id ? `${user.id}-staff` : 'staff',
-      channelId: channelId,
-      channelType: channelType,
+      channelId,
+      channelType,
       payloadType: MessagePayloadType.RICH_TEXT,
       metadata: {
         isLocal: true,
@@ -1066,7 +1079,7 @@ const MessageInput: React.FC<MessageInputProps> = ({
       } as any;
 
       try {
-        if (visitorExtra?.platform_type && visitorExtra.platform_type !== PlatformType.WEBSITE) {
+        if ((await resolvePlatformType()) !== PlatformType.WEBSITE) {
           try {
             await chatMessagesApiService.staffSendPlatformMessage({
               channel_id: channelId,
@@ -1099,7 +1112,7 @@ const MessageInput: React.FC<MessageInputProps> = ({
 
     setSelectedFiles([]);
     setMessage('');
-  }, [selectedFiles, message, channelId, channelType, user?.id, addMessage, updateConversationLastMessage, moveConversationToTop, updateMessageByClientMsgNo, isConnected, sendWsMessage, showToast, showError, visitorExtra?.platform_type]);
+  }, [selectedFiles, message, channelId, channelType, user?.id, addMessage, updateConversationLastMessage, moveConversationToTop, updateMessageByClientMsgNo, isConnected, sendWsMessage, showToast, showError, resolvePlatformType]);
 
   const sendRichTextWithImages = useCallback(async (): Promise<void> => {
     const items = [...pastedItems];
@@ -1131,8 +1144,8 @@ const MessageInput: React.FC<MessageInputProps> = ({
       clientMsgNo: nowId,
       messageSeq: 0,
       fromUid: user?.id ? `${user.id}-staff` : 'staff',
-      channelId: channelId,
-      channelType: channelType,
+      channelId,
+      channelType,
       payloadType: MessagePayloadType.RICH_TEXT,
       metadata: {
         isLocal: true,
@@ -1184,7 +1197,7 @@ const MessageInput: React.FC<MessageInputProps> = ({
     } as any;
 
     try {
-      if (visitorExtra?.platform_type && visitorExtra.platform_type !== PlatformType.WEBSITE) {
+      if ((await resolvePlatformType()) !== PlatformType.WEBSITE) {
         try {
           await chatMessagesApiService.staffSendPlatformMessage({
             channel_id: channelId,
@@ -1212,7 +1225,7 @@ const MessageInput: React.FC<MessageInputProps> = ({
     setPastedItems([]);
     if (fileInputRef.current) fileInputRef.current.value = '';
     setMessage('');
-  }, [pastedItems, channelId, channelType, user?.id, addMessage, updateConversationLastMessage, moveConversationToTop, updateMessageByClientMsgNo, isConnected, sendWsMessage, showToast, showError, message, visitorExtra?.platform_type]);
+  }, [pastedItems, channelId, channelType, user?.id, addMessage, updateConversationLastMessage, moveConversationToTop, updateMessageByClientMsgNo, isConnected, sendWsMessage, showToast, showError, message, resolvePlatformType]);
 
   const handleMessageChange = (e: React.ChangeEvent<HTMLTextAreaElement>): void => {
     setMessage(e.target.value);
@@ -1344,7 +1357,7 @@ const MessageInput: React.FC<MessageInputProps> = ({
               visitor_id: visitorId,
               channel_id: channelId,
               channel_type: channelType,
-              platform_type: visitorExtra?.platform_type,
+              platform_type: platformType,
             }}
           />
           {/* <button className="p-1.5 text-gray-500 hover:text-gray-700 transition-colors duration-200">
@@ -1368,13 +1381,13 @@ const MessageInput: React.FC<MessageInputProps> = ({
 
         {/* AI 助手开关 - agent 会话时不显示 */}
         {!isAIChat && (
-          <div className="flex items-center space-x-2" title={isAIEnabled ? t('chat.input.ai.enabled', 'AI已启用') : t('chat.input.ai.disabled', 'AI已禁用')}>
-            <span className="text-xs text-gray-600 dark:text-gray-400 select-none">{t('chat.input.ai.label', 'AI助手')}</span>
+          <div className="flex items-center space-x-2" title={isAIReplyFrozen ? '监控模式锁定' : isAIEnabled ? t('chat.input.ai.enabled', 'AI已启用') : t('chat.input.ai.disabled', 'AI已禁用')}>
+            <span className="text-xs text-gray-600 dark:text-gray-400 select-none">{isAIReplyFrozen ? '监控模式锁定' : t('chat.input.ai.label', 'AI助手')}</span>
             <Toggle
               aria-label={t('chat.input.ai.toggleAria', '切换AI助手')}
               checked={isAIEnabled}
               onChange={handleChangeAI}
-              disabled={!visitorId || isTogglingAI}
+              disabled={isAIReplyFrozen || !visitorId || isTogglingAI}
             />
           </div>
         )}
@@ -1483,7 +1496,7 @@ const MessageInput: React.FC<MessageInputProps> = ({
             return (
               <div className={`grid ${gridColsClass} gap-2 w-fit`}>
                 {pastedItems.map((it, idx) => (
-                  <div key={idx} className={"relative rounded-md overflow-hidden border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 " + getGridItemClass(idx)}>
+                  <div key={idx} className={`relative rounded-md overflow-hidden border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 ${  getGridItemClass(idx)}`}>
                     <img src={it.previewUrl} alt={t('chat.input.preview.imageAlt', '预览图片{{index}}', { index: idx + 1 })} className="w-[100px] h-[100px] object-cover" />
                     {/* Progress overlay */}
                     {it.status && it.status !== 'idle' && it.status !== 'completed' && (

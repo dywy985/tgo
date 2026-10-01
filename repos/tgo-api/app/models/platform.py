@@ -9,7 +9,7 @@ if TYPE_CHECKING:
     from app.models.project import Project
     from app.models.visitor import Visitor
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, func, event, inspect as sa_inspect
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func, event, inspect as sa_inspect
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship, foreign
 
@@ -158,6 +158,15 @@ class Platform(Base):
         nullable=True,
         comment="Platform-specific configuration"
     )
+    # Draft/active connection configuration is intentionally separate from
+    # ``config`` because the latter is synchronized to other services. Secrets
+    # are stored as one encrypted envelope and are never serialized by schemas.
+    connection_draft: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    connection_active: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    connection_secrets_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    connection_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    connection_state: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
+    connection_cutover_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     is_active: Mapped[bool] = mapped_column(
         Boolean,
         nullable=False,

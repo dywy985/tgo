@@ -2,8 +2,10 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { apiClient } from '@/services/api';
 import { FiSend, FiMessageSquare, FiCpu, FiRefreshCw } from 'react-icons/fi';
+import MonitorImage from '@/components/chat/messages/MonitorImage';
 
 interface WecomSession {
+  conversation_key: string;
   from_user: string;
   conv_name: string;
   msg_count: number;
@@ -12,6 +14,8 @@ interface WecomSession {
 
 interface WecomMessage {
   id: string;
+  message_id: string;
+  msg_type: string;
   from_user: string;
   content: string | null;
   sender_name: string | null;
@@ -21,6 +25,8 @@ interface WecomMessage {
   conv_name: string | null;
   fetched_at: string | null;
   ai_reply: string | null;
+  media_status: 'none' | 'ready' | 'missing' | string;
+  media: Array<{ id: string; width: number; height: number; status: string; url: string; capture_source: 'cache' | 'screen_crop' }>;
 }
 
 interface SendResult {
@@ -80,7 +86,7 @@ const WecomDebugPanel: React.FC = () => {
     try {
       const d = await apiClient.get<{ ok: boolean; count: number; messages: any[] }>('/v1/debug/wecom/aibot-messages?n=50');
       setBotMsgs(d.messages || []);
-    } catch (e: any) {
+    } catch {
       setBotMsgs([]);
     } finally {
       setBotLoading(false);
@@ -92,7 +98,7 @@ const WecomDebugPanel: React.FC = () => {
       const data = await apiClient.get<{ trigger: TriggerConfig }>('/v1/debug/wecom/trigger');
       setTriggerCfg({ ...data.trigger });
     } catch (e: any) {
-      setError('加载触发配置失败: ' + (e?.getUserMessage?.() || e?.message || e));
+      setError(`加载触发配置失败: ${e?.getUserMessage?.() || e?.message || e}`);
     }
   }, []);
 
@@ -114,7 +120,7 @@ const WecomDebugPanel: React.FC = () => {
       setError('');
       setTimeout(() => setTriggerSaved(false), 2000);
     } catch (e: any) {
-      setError('保存触发配置失败: ' + (e?.getUserMessage?.() || e?.message || e));
+      setError(`保存触发配置失败: ${e?.getUserMessage?.() || e?.message || e}`);
     } finally {
       setSavingTrigger(false);
     }
@@ -127,7 +133,7 @@ const WecomDebugPanel: React.FC = () => {
       setSessions(data.sessions || []);
       setError('');
     } catch (e: any) {
-      setError('加载会话失败: ' + (e?.getUserMessage?.() || e?.message || e));
+      setError(`加载会话失败: ${e?.getUserMessage?.() || e?.message || e}`);
     } finally {
       setLoadingSessions(false);
     }
@@ -137,11 +143,11 @@ const WecomDebugPanel: React.FC = () => {
     setLoadingMsgs(true);
     try {
       const data = await apiClient.get<{ count: number; messages: WecomMessage[] }>(
-        '/v1/debug/wecom/messages?conv=' + encodeURIComponent(conv) + '&limit=300'
+        `/v1/debug/wecom/messages?conv=${encodeURIComponent(conv)}&limit=300`
       );
       setMessages(data.messages || []);
     } catch (e: any) {
-      setError('加载消息失败: ' + (e?.getUserMessage?.() || e?.message || e));
+      setError(`加载消息失败: ${e?.getUserMessage?.() || e?.message || e}`);
     } finally {
       setLoadingMsgs(false);
     }
@@ -175,7 +181,7 @@ const WecomDebugPanel: React.FC = () => {
       }
       setError('');
     } catch (e: any) {
-      setError('发送失败: ' + (e?.getUserMessage?.() || e?.message || e));
+      setError(`发送失败: ${e?.getUserMessage?.() || e?.message || e}`);
     } finally {
       setSending(false);
     }
@@ -195,12 +201,14 @@ const WecomDebugPanel: React.FC = () => {
             wecom-reader 群聊数据（来自 TGO inbox）+ WorkTool / aibot 发送工具
           </p>
         </div>
-        <button
-          onClick={() => { loadSessions(); if (currentConv) loadMessages(currentConv); if (tab === 'bot') loadBotMsgs(); }}
-          className="flex items-center gap-1 px-3 py-1.5 rounded-md text-sm bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300 hover:bg-blue-100"
-        >
-          <FiRefreshCw /> {t('common.refresh', '刷新')}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => { loadSessions(); if (currentConv) loadMessages(currentConv); if (tab === 'bot') loadBotMsgs(); }}
+            className="flex items-center gap-1 px-3 py-1.5 rounded-md text-sm bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300 hover:bg-blue-100"
+          >
+            <FiRefreshCw /> {t('common.refresh', '刷新')}
+          </button>
+        </div>
       </div>
 
       {error && <div className="text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 px-3 py-2 rounded-md">{error}</div>}
@@ -268,14 +276,14 @@ const WecomDebugPanel: React.FC = () => {
             )}
             {sessions.map((s) => (
               <div
-                key={s.from_user}
-                onClick={() => selectConv(s.from_user, s.conv_name)}
+                key={s.conversation_key}
+                onClick={() => selectConv(s.conversation_key, s.conv_name)}
                 className={`px-3 py-2 cursor-pointer border-b border-gray-100 dark:border-gray-700/50 ${
-                  currentConv === s.from_user ? 'bg-blue-50 dark:bg-blue-900/30' : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'
+                  currentConv === s.conversation_key ? 'bg-blue-50 dark:bg-blue-900/30' : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'
                 }`}
               >
                 <div className="text-sm text-gray-800 dark:text-gray-200 truncate">{s.conv_name}</div>
-                <div className="text-xs text-gray-400">{s.from_user} · {s.msg_count}条</div>
+                <div className="text-xs text-gray-400">{s.msg_count}条</div>
               </div>
             ))}
           </div>
@@ -306,7 +314,7 @@ const WecomDebugPanel: React.FC = () => {
                     ? 'bg-blue-50 dark:bg-blue-900/30 text-gray-800 dark:text-gray-200'
                     : 'bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-200'
                 }`}>
-                  {m.content || '(非文本)'}
+                  {m.msg_type?.toLowerCase() === 'image' ? <div className="space-y-1.5 text-left"><MonitorImage monitorMessageId={m.message_id} width={m.media?.[0]?.width} height={m.media?.[0]?.height} mediaStatus={m.media_status} isStaff={Boolean(m.is_from_colleague)} />{m.content && !/^\s*(?:\[图片\]|【图片】|\[image\])\s*$/i.test(m.content) && <div>{m.content}</div>}</div> : (m.content || '(非文本)')}
                 </div>
                 {m.ai_reply && (
                   <div className="text-xs text-teal-600 dark:text-teal-400 mt-0.5">AI: {m.ai_reply.slice(0, 120)}</div>

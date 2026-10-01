@@ -27,8 +27,10 @@ class Settings(BaseSettings):
 
     # Logging
     log_level: str = "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+    ai_reply_frozen: bool = True
+    callback_rate_limit_per_minute: int = 300
+    media_rate_limit_per_minute: int = 60
 
 
 
 settings = Settings()
-

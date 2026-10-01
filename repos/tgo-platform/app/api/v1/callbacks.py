@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import logging
 import re
 import uuid
@@ -51,7 +52,7 @@ def _wecom_decrypt_message(encrypt_b64: str, encoding_aes_key: str, receiveid_ex
 from typing import Any
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Request, Depends, Response, status
+from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -71,6 +72,12 @@ from app.api.telegram_utils import (
 )
 
 router = APIRouter()
+MAX_WORKTOOL_MEDIA_BYTES = 8 * 1024 * 1024
+
+
+def _callback_token_valid(platform: Platform, supplied: str) -> bool:
+    expected = str((platform.config or {}).get("token") or "")
+    return not expected or hmac.compare_digest(supplied or "", expected)
 
 
 def _sha1_hex(s: str) -> str:
@@ -1096,6 +1103,8 @@ async def _handle_wecom_reader_webhook(
       "chatid": "wrT0WARQAAHaVhGOZBnxjqN2uh6dS1Cw",  # aibot 推送目标 (可选)
       "msg_type": "text",
       "is_from_colleague": false          # 客服本人/机器人消息为 true
+      "group_owner_userid": "ChenHongSen", # 企微群主 UserID (群聊可选)
+      "group_owner_name": "陈泓森"          # 企微群主姓名 (UserID 缺失时回退)
     }
 
     Auth: path api_key + optional X-Callback-Token matching platform.config.token.
@@ -1117,7 +1126,10 @@ async def _handle_wecom_reader_webhook(
     try:
         payload = json.loads(body_text)
     except Exception as e:
-        logging.error("[WECOM_READER] Invalid JSON: %s, body=%s", e, body_text[:300])
+        logging.error(
+            "[WECOM_READER] Invalid JSON: %s, request_id=%s, body_length=%d",
+            type(e).__name__, get_request_id(request), len(raw_body),
+        )
         return error_response(
             status.HTTP_400_BAD_REQUEST,
             code="INVALID_PAYLOAD",
@@ -1132,14 +1144,18 @@ async def _handle_wecom_reader_webhook(
     sender_name = str(payload.get("sender_name") or "").strip()
     chatid = str(payload.get("chatid") or "").strip()
     msg_type = str(payload.get("msg_type") or "text").lower()
-    is_from_colleague = bool(payload.get("is_from_colleague", False))
+    sender_kind = str(payload.get("sender_kind") or ("staff" if payload.get("is_from_colleague") else "customer"))
+    is_from_colleague = sender_kind == "staff"
 
     # ============ H4: 客服指令回执（#完成 TK-xxx → 工单 resolved）============
     if is_from_colleague and content:
         await _handle_staff_ticket_command(content, from_uid, sender_name, chatid)
 
-    if not from_uid or not content:
-        logging.warning("[WECOM_READER] Missing from_uid/content: %s", payload)
+    if not from_uid or (not content and msg_type == "text"):
+        logging.warning(
+            "[WECOM_READER] Missing required fields: request_id=%s, body_length=%d",
+            get_request_id(request), len(raw_body),
+        )
         return {"ok": True}
 
     received_at = None
@@ -1150,6 +1166,20 @@ async def _handle_wecom_reader_webhook(
     except Exception:
         received_at = None
 
+    callback_metadata = dict(payload.get("metadata") or {})
+    callback_metadata["group_owner_userid"] = (
+        callback_metadata.get("group_owner_userid")
+        or payload.get("group_owner_userid") or payload.get("owner_userid")
+    )
+    callback_metadata["group_owner_name"] = (
+        callback_metadata.get("group_owner_name")
+        or payload.get("group_owner_name") or payload.get("owner_name")
+    )
+    if str(payload.get("room_type")) in ("1", "3") and not (
+        callback_metadata.get("group_owner_userid") or callback_metadata.get("group_owner_name")
+    ):
+        callback_metadata["group_owner_diagnostic"] = "missing_owner_fields_from_worktool"
+
     raw_payload = {
         "raw_json": body_text,
         "parsed": payload,
@@ -1158,6 +1188,9 @@ async def _handle_wecom_reader_webhook(
         "conv_name": conv_name,
         "sender_name": sender_name,
         "sender_id": payload.get("sender_id"),
+        "sender_kind": sender_kind,
+        "room_type": payload.get("room_type"),
+        "metadata": callback_metadata,
     }
 
     try:
@@ -1244,6 +1277,73 @@ async def _handle_staff_ticket_command(content: str, from_uid: str, sender_name:
         logging.error("[WECOM_READER] 指令回执异常 %s: %s", number, e)
 
 
+@router.post("/v1/platforms/callback/{platform_api_key}/media")
+async def platforms_media_callback(
+    platform_api_key: str,
+    request: Request,
+    message_id: str = Form(...),
+    robot_id: str = Form(...),
+    capture_source: str = Form("cache"),
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Relay one authenticated WorkTool image without logging content or keys."""
+    platform = await db.scalar(
+        select(Platform).where(
+            Platform.api_key == platform_api_key,
+            Platform.is_active.is_(True),
+        )
+    )
+    if not platform or (platform.type or "").lower() != "worktool":
+        return error_response(
+            status.HTTP_404_NOT_FOUND,
+            code="PLATFORM_NOT_FOUND",
+            message="Platform not found",
+            request_id=get_request_id(request),
+        )
+    if not _callback_token_valid(platform, request.headers.get("X-Callback-Token") or ""):
+        return error_response(
+            status.HTTP_403_FORBIDDEN,
+            code="CALLBACK_TOKEN_MISMATCH",
+            message="Callback token verification failed",
+            request_id=get_request_id(request),
+        )
+    content = await file.read(MAX_WORKTOOL_MEDIA_BYTES + 1)
+    if not content or len(content) > MAX_WORKTOOL_MEDIA_BYTES:
+        return error_response(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            code="MEDIA_TOO_LARGE",
+            message="Image must be between 1 byte and 8 MB",
+            request_id=get_request_id(request),
+        )
+    try:
+        result = await request.app.state.tgo_api_client.record_reply_monitor_media(
+            platform_api_key=platform_api_key,
+            message_id=message_id,
+            filename=file.filename or "image",
+            content_type=file.content_type or "application/octet-stream",
+            content=content,
+            capture_source=capture_source,
+        )
+    except Exception as exc:
+        logging.warning(
+            "[WORKTOOL_MEDIA] relay failed request_id=%s robot=%s error=%s",
+            get_request_id(request), hashlib.sha256(robot_id.encode()).hexdigest()[:12],
+            type(exc).__name__,
+        )
+        return error_response(
+            status.HTTP_502_BAD_GATEWAY,
+            code="MEDIA_RELAY_FAILED",
+            message="Media relay failed",
+            request_id=get_request_id(request),
+        )
+    logging.info(
+        "[WORKTOOL_MEDIA] relayed request_id=%s size=%d",
+        get_request_id(request), len(content),
+    )
+    return result
+
+
 @router.post("/v1/platforms/callback/{platform_api_key}", responses={400: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}, 501: {"model": ErrorResponse}})
 async def platforms_callback(platform_api_key: str, request: Request, db: AsyncSession = Depends(get_db)):
     """Unified platform callback endpoint for WeCom and WuKongIM.
@@ -1256,12 +1356,12 @@ async def platforms_callback(platform_api_key: str, request: Request, db: AsyncS
         select(Platform).where(Platform.api_key == platform_api_key, Platform.is_active.is_(True))
     )
     if not platform:
-        logging.warning("Callback for unknown platform: %s", platform_api_key)
+        logging.warning("Callback for unknown platform, request_id=%s", get_request_id(request))
         return error_response(status.HTTP_404_NOT_FOUND, code="PLATFORM_NOT_FOUND", message="Platform not found", request_id=get_request_id(request))
 
     platform_type = (platform.type or "").lower()
-    logging.info("[CALLBACK] Routing callback for platform_id=%s, type=%s, api_key=%s",
-                 platform.id, platform_type, platform_api_key[:20] + "...")
+    logging.info("[CALLBACK] Routing callback for platform_id=%s, type=%s, request_id=%s",
+                 platform.id, platform_type, get_request_id(request))
 
     # Platform-type-specific routing
     if platform_type == "wecom":
@@ -1292,4 +1392,3 @@ async def platforms_callback(platform_api_key: str, request: Request, db: AsyncS
 
     # Unsupported platform type for this endpoint
     return error_response(status.HTTP_404_NOT_FOUND, code="PLATFORM_TYPE_UNSUPPORTED", message=f"Unsupported platform type: {platform.type}", request_id=get_request_id(request))
-

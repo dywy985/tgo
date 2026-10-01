@@ -380,7 +380,7 @@ class SlackChannelListener:
                                 text=reply_content,
                                 thread_ts=thread_ts or ts,  # Reply in thread if applicable
                             )
-                            print(f"[SLACK] Reply sent to {channel}: {reply_content[:50]}...")
+                            print(f"[SLACK] Reply sent content_length={len(reply_content or '')}")
                         except Exception as e:
                             print(f"[SLACK] Failed to send reply: {e}")
                 else:

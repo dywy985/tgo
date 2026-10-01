@@ -16,6 +16,12 @@ export const NAVIGATION_ITEMS: NavigationItem[] = [
     path: '/dashboard'
   },
   {
+    id: 'reply-monitor',
+    title: '人工回复监控',
+    icon: 'ShieldCheck',
+    path: '/reply-monitor'
+  },
+  {
     id: 'ai',
     title: 'navigation.ai',
     icon: 'Sparkles',

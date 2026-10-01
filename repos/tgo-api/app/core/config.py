@@ -55,6 +55,19 @@ class Settings(BaseSettings):
         description="Access token expiration time in minutes",
         gt=0
     )
+    REFRESH_TOKEN_EXPIRE_DAYS: int = Field(
+        default=30,
+        description="Staff refresh token expiration time in days",
+        gt=0,
+    )
+    REFRESH_COOKIE_NAME: str = Field(
+        default="tgo-refresh-token",
+        description="Name of the HttpOnly staff refresh cookie",
+    )
+    REFRESH_COOKIE_SECURE: bool = Field(
+        default=False,
+        description="Only send the refresh cookie over HTTPS",
+    )
     ALGORITHM: str = Field(
         default="HS256",
         description="JWT algorithm"
@@ -89,7 +102,8 @@ class Settings(BaseSettings):
     # CORS
     BACKEND_CORS_ORIGINS: List[str] = Field(
         default_factory=lambda: [
-            "*",
+            "http://127.0.0.1:5173",
+            "http://localhost:5173",
         ],
         description="List of allowed CORS origins"
     )
@@ -137,6 +151,10 @@ class Settings(BaseSettings):
     AI_SERVICE_API_KEY: Optional[str] = Field(
         default=None,
         description="API key for AI service authentication (if required)"
+    )
+    AI_REPLY_FROZEN: bool = Field(
+        default=True,
+        description="Hard stop for every automatic AI/RAG customer reply path",
     )
 
     # Workflow Service settings
@@ -380,6 +398,15 @@ class Settings(BaseSettings):
         default=100,
         description="Rate limit requests per minute",
         gt=0
+    )
+    SECURITY_AUDIT_AUTH_FAILURES: bool = Field(
+        default=True,
+        description="Log redacted authentication failures for sensitive endpoints",
+    )
+    REPLY_MONITOR_RETENTION_DAYS: int = Field(
+        default=180,
+        ge=1,
+        description="Days to keep customer message bodies and monitor images",
     )
 
     # Pagination

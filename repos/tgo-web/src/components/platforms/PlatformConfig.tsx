@@ -388,11 +388,11 @@ const PlatformConfig: React.FC<PlatformConfigProps> = ({ platform, onUpdate, onT
         )}
 
         {platform.type === 'worktool' && (
-          <WorkToolPlatformConfig />
+          <WorkToolPlatformConfig platformId={platform.id} platformName={displayName} />
         )}
 
         {platform.type === 'wecom_bot' && (
-          <WeComBotLongConnConfig />
+          <WeComBotLongConnConfig platformId={platform.id} />
         )}
 
         {platform.type !== 'custom' && platform.type !== 'worktool' && platform.type !== 'wecom_bot' && (

@@ -327,7 +327,7 @@ class TelegramChannelListener:
         if not msg_data:
             return
         
-        print(f"[TELEGRAM] Processing message from {msg_data['from_display_name']} in {msg_data['chat_type']}: {msg_data['content'][:50]}...")
+        print(f"[TELEGRAM] Processing message type={msg_data['chat_type']} length={len(msg_data.get('content') or '')}")
 
         async with self._session_factory() as db:
             try:
@@ -364,7 +364,7 @@ class TelegramChannelListener:
                                         new_url = upload_result.get("file_url") or upload_result.get("url")
                                         if new_url:
                                             msg_data["content"] = new_url
-                                            print(f"[TELEGRAM] Image uploaded successfully: {msg_data['content']}")
+                                            print("[TELEGRAM] Image uploaded successfully")
                                         else:
                                             print(f"[TELEGRAM] Image upload response missing URL: {upload_result}")
                                     else:

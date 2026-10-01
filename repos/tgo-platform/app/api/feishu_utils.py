@@ -299,7 +299,7 @@ async def feishu_get_user_info(
     Returns:
         Tuple of (name, avatar_url), either can be None if not found
     """
-    print("get user info---->", app_id, app_secret, open_id)
+    print("[FEISHU] resolving user info")
     if not (app_id and app_secret and open_id):
         logging.debug("[FEISHU] Missing required parameters for get user info: app_id=%s, app_secret=%s, open_id=%s", app_id, app_secret, open_id)
         return None, None
@@ -428,4 +428,3 @@ async def feishu_send_message(
             raise RuntimeError(f"Feishu send message failed: {data}")
 
         return data
-
